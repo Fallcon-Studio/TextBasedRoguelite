@@ -9,7 +9,7 @@ from typing import List
 from .entities import Combatant, Stats, describe_combatants
 from .items import Item, best_item, roll_item_drop
 from .events import resolve_event
-from .world import Location, generate_world
+from .world import Exit, Location, WorldGraph, generate_world
 
 
 @dataclass
@@ -29,7 +29,9 @@ class Game:
             name="Drifter",
             stats=Stats(health=12, stamina=8, skill=4, awareness=4),
         )
-        self.world: List[Location] = generate_world(settings.seed, settings.steps)
+        self.world: WorldGraph = generate_world(settings.seed, settings.steps)
+        self.current_location_id = self.world.start
+        self.route_taken: List[str] = []
         self.journal: List[str] = []
 
     def log(self, entry: str) -> None:
@@ -80,8 +82,10 @@ class Game:
 
     def play(self) -> bool:
         self.log("\n=== Text Roguelite Expedition ===")
-        for idx, location in enumerate(self.world, start=1):
-            self.describe_location(location, idx)
+        while True:
+            location = self.world.nodes[self.current_location_id]
+            self.route_taken.append(location.name)
+            self.describe_location(location)
             if location.encounter == "enemy":
                 survived = self.handle_combat(location)
                 if not survived:
@@ -95,13 +99,29 @@ class Game:
             if not self.player.stats.is_alive():
                 self.log("Your injuries are too severe to continue.")
                 return False
-        self.log("You have endured every encounter in this route. Victory!")
-        return True
+            if not location.exits:
+                self.log("You have reached the end of this route. Victory!")
+                return True
 
-    def describe_location(self, location: Location, idx: int) -> None:
-        self.log(f"\n[{idx}/{len(self.world)}] {location.name} :: {location.description}")
-        self.log(f"Encounter: {location.encounter.upper()}, danger {location.danger}.")
+            chosen_exit = self.choose_next_step(location)
+            self.apply_travel_cost(chosen_exit)
+            if not self.player.stats.is_alive():
+                self.log("You collapse. The expedition ends here.")
+                return False
+            self.current_location_id = chosen_exit.destination
+
+    def describe_location(self, location: Location) -> None:
+        self.log(
+            f"\n[{len(self.route_taken)}] {location.name} ({location.biome.title}) :: "
+            f"{location.description}"
+        )
+        self.log(
+            f"Encounter: {location.encounter.upper()}, danger {location.danger}, "
+            f"rewards x{location.reward_multiplier:.2f}."
+        )
         self.log("Status :: " + describe_combatants([self.player]))
+        breadcrumb = " -> ".join(self.route_taken)
+        self.log(f"Route so far: {breadcrumb}")
 
     def handle_combat(self, location: Location) -> bool:
         foe_stats = Stats(
@@ -122,7 +142,7 @@ class Game:
             self.resolve_enemy_turn(foe)
         if foe.stats.is_alive():
             return False
-        loot = max(1, location.danger // 2)
+        loot = max(1, round((location.danger // 2 or 1) * location.reward_multiplier))
         self.player.stats.stamina = min(self.player.stats.stamina + loot, self.player.stats.awareness + 6)
         self.log(f"Enemy defeated. You salvage {loot} stamina worth of supplies.")
         dropped_item = roll_item_drop(self.rng, location.danger)
@@ -169,8 +189,8 @@ class Game:
         self.log(foe.attack(self.player, self.rng))
 
     def handle_rest(self, location: Location) -> None:
-        heal = 2 + location.danger // 2
-        stamina = 3
+        heal = max(1, round((2 + location.danger // 2) * location.reward_multiplier))
+        stamina = max(2, round(3 * location.reward_multiplier))
         self.player.stats.health = min(self.player.stats.health + heal, self.player.stats.awareness + 10)
         self.player.stats.stamina = min(self.player.stats.stamina + stamina, self.player.stats.awareness + 6)
         self.log(f"Safe pocket: you rest, healing {heal} and restoring {stamina} stamina.")
@@ -183,3 +203,44 @@ class Game:
         if item:
             self.add_item_to_inventory(item)
         self.log("Status :: " + describe_combatants([self.player]))
+
+    def choose_next_step(self, location: Location) -> Exit:
+        self.log("Paths branch ahead:")
+        for idx, exit in enumerate(location.exits, start=1):
+            destination = self.world.nodes[exit.destination]
+            note = f" [{exit.note}]" if exit.note else ""
+            self.log(
+                f" {idx}. {exit.label} toward {destination.name} (cost {exit.cost} stamina, "
+                f"danger {destination.danger}, {destination.biome.title}){note}"
+            )
+
+        if self.settings.auto:
+            return min(
+                location.exits,
+                key=lambda ex: (self.world.nodes[ex.destination].danger + ex.cost),
+            )
+
+        prompt = "Choose your path by number: "
+        while True:
+            try:
+                choice = int(input(prompt))
+            except ValueError:
+                print("Enter a number matching the listed paths.")
+                continue
+            if 1 <= choice <= len(location.exits):
+                return location.exits[choice - 1]
+            print("Invalid path. Try again.")
+
+    def apply_travel_cost(self, chosen_exit: Exit) -> None:
+        self.player.stats.guard = 0
+        self.player.stats.stamina -= chosen_exit.cost
+        if self.player.stats.stamina < 0:
+            deficit = abs(self.player.stats.stamina)
+            self.player.stats.stamina = 0
+            self.player.stats.health -= deficit
+            self.log(
+                f"Travel grinds you down: you spend {chosen_exit.cost} stamina and lose "
+                f"{deficit} health pushing onward."
+            )
+        else:
+            self.log(f"You spend {chosen_exit.cost} stamina reaching the next waypoint.")
