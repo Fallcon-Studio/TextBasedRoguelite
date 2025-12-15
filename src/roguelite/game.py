@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import List
 
 from .entities import Combatant, Stats, describe_combatants
+from .enemies import EnemyTemplate, pick_enemy_template
 from .items import Item, best_item, roll_item_drop
 from .events import resolve_event
 from .world import Exit, Location, WorldGraph, generate_world
@@ -33,6 +34,7 @@ class Game:
         self.current_location_id = self.world.start
         self.route_taken: List[str] = []
         self.journal: List[str] = []
+        self.experience: int = 0
 
     def log(self, entry: str) -> None:
         self.journal.append(entry)
@@ -124,27 +126,37 @@ class Game:
         self.log(f"Route so far: {breadcrumb}")
 
     def handle_combat(self, location: Location) -> bool:
-        foe_stats = Stats(
-            health=6 + location.danger,
-            stamina=5 + location.danger,
-            skill=3 + location.danger // 2,
-            awareness=3 + location.danger // 2,
+        template = pick_enemy_template(location.biome.key, location.danger, self.rng)
+        foe = template.spawn(location.danger, self.rng)
+        self.log(
+            f"A {template.title.lower()} emerges: {template.description}. "
+            f"Threat level {location.danger}."
         )
-        foe = Combatant(name="Adversary", stats=foe_stats)
-        self.log(f"An enemy emerges, matching the threat level {location.danger}.")
         while foe.stats.is_alive() and self.player.stats.is_alive():
             self.log("-- Combat Round --")
             self.log(describe_combatants([self.player, foe]))
+            enemy_action, intent = template.behavior.decide(foe, self.player, self.rng)
+            self.log(f"{foe.name} signals intent: {intent} [{enemy_action.upper()}].")
             player_action = self.choose_player_action()
             self.resolve_player_action(player_action, foe)
             if not foe.stats.is_alive():
                 break
-            self.resolve_enemy_turn(foe)
+            self.resolve_enemy_action(enemy_action, foe, template)
         if foe.stats.is_alive():
             return False
-        loot = max(1, round((location.danger // 2 or 1) * location.reward_multiplier))
-        self.player.stats.stamina = min(self.player.stats.stamina + loot, self.player.stats.awareness + 6)
-        self.log(f"Enemy defeated. You salvage {loot} stamina worth of supplies.")
+        loot = max(
+            1,
+            round((location.danger // 2 or 1) * location.reward_multiplier * template.loot_multiplier),
+        )
+        xp_gain = max(1, round(location.danger * template.xp_value * location.reward_multiplier))
+        self.experience += xp_gain
+        self.player.stats.stamina = min(
+            self.player.stats.stamina + loot, self.player.stats.awareness + 6
+        )
+        self.log(
+            f"Enemy defeated. You salvage {loot} stamina worth of supplies and gain "
+            f"{xp_gain} insight."
+        )
         dropped_item = roll_item_drop(self.rng, location.danger)
         if dropped_item:
             self.add_item_to_inventory(dropped_item)
@@ -176,17 +188,24 @@ class Game:
         else:
             self.log(self.player.recover())
 
-    def resolve_enemy_turn(self, foe: Combatant) -> None:
-        if foe.stats.stamina <= 0:
-            foe.stats.stamina += 1
-            self.log(f"{foe.name} hesitates, regaining stamina.")
-            return
-        if self.player.stats.guard > 2 and foe.stats.stamina > 1:
-            foe.stats.stamina -= 1
+    def resolve_enemy_action(self, action: str, foe: Combatant, template: EnemyTemplate) -> None:
+        if action == "guard":
             self.log(foe.guard())
             return
+        if action == "recover":
+            self.log(foe.recover())
+            return
+
+        if foe.stats.stamina <= 0:
+            foe.stats.stamina += 1
+            self.log(f"{foe.name} falters, forced to regain stamina instead.")
+            return
+
         foe.stats.stamina -= 1
         self.log(foe.attack(self.player, self.rng))
+        effect = template.on_hit_effect(foe, self.player, self.rng)
+        if effect:
+            self.log(effect)
 
     def handle_rest(self, location: Location) -> None:
         heal = max(1, round((2 + location.danger // 2) * location.reward_multiplier))
