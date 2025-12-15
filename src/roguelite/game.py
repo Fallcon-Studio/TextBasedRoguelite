@@ -8,7 +8,7 @@ from typing import List
 
 from .entities import Combatant, Stats, describe_combatants
 from .enemies import EnemyTemplate, pick_enemy_template
-from .items import Item, best_item, roll_item_drop
+from .items import Consumable, Item, best_item, roll_consumable_drop, roll_item_drop
 from .events import resolve_event
 from .world import Exit, Location, WorldGraph, generate_world
 
@@ -35,50 +35,120 @@ class Game:
         self.route_taken: List[str] = []
         self.journal: List[str] = []
         self.experience: int = 0
+        self.level: int = 1
+        self.xp_to_next: int = 5
 
     def log(self, entry: str) -> None:
         self.journal.append(entry)
         print(entry)
 
-    def add_item_to_inventory(self, item: Item) -> None:
+    def award_experience(self, amount: int, reason: str) -> None:
+        self.experience += amount
+        self.log(f"You gain {amount} insight from {reason} (total {self.experience}).")
+        self.maybe_level_up()
+
+    def maybe_level_up(self) -> None:
+        while self.experience >= self.xp_to_next:
+            self.experience -= self.xp_to_next
+            self.level += 1
+            self.log(f"Insight crystallizes. You reach level {self.level}!")
+            self.offer_talent_choice()
+            self.xp_to_next = 5 + (self.level - 1) * 3
+
+    def offer_talent_choice(self) -> None:
+        options = {
+            "health": ("Bolster vitality (+3 health)", lambda: self.apply_stat_gain("health", 3)),
+            "stamina": (
+                "Deepen stamina reserves (+2 stamina)",
+                lambda: self.apply_stat_gain("stamina", 2),
+            ),
+            "skill": ("Sharpen skill (+1 skill)", lambda: self.apply_stat_gain("skill", 1)),
+            "awareness": (
+                "Widen awareness (+1 awareness)",
+                lambda: self.apply_stat_gain("awareness", 1),
+            ),
+        }
+
+        if self.settings.auto:
+            pick = min(options.keys(), key=lambda k: getattr(self.player.stats, k))
+            desc, action = options[pick]
+            action()
+            self.log(f"Auto-pick talent: {desc}.")
+            return
+
+        self.log("Choose how to grow from your experience:")
+        keys = list(options.keys())
+        for idx, key in enumerate(keys, start=1):
+            self.log(f" {idx}. {options[key][0]}")
+        prompt = "Select growth option: "
+        while True:
+            try:
+                choice = int(input(prompt))
+            except ValueError:
+                print("Enter a listed number.")
+                continue
+            if 1 <= choice <= len(keys):
+                _, action = options[keys[choice - 1]]
+                action()
+                self.log(f"You feel stronger: {options[keys[choice - 1]][0]}.")
+                return
+            print("Invalid selection.")
+
+    def apply_stat_gain(self, key: str, amount: int) -> None:
+        current = getattr(self.player.stats, key)
+        setattr(self.player.stats, key, current + amount)
+        if key in {"health", "stamina"}:
+            cap = self.player.stats.awareness + (10 if key == "health" else 6)
+            setattr(self.player.stats, key, min(getattr(self.player.stats, key), cap))
+
+    def add_item_to_inventory(self, item: Item | Consumable) -> None:
+        if isinstance(item, Consumable):
+            self.player.consumables.append(item)
+            self.log(f"You obtain {item.summary()}. {item.description}")
+            return
+
         self.player.inventory.append(item)
         self.log(f"You obtain {item.summary()}. {item.description}")
         if self.settings.auto:
-            self.auto_equip_best_item()
+            self.auto_equip_best_item(item.slot)
         else:
             self.prompt_equip(item)
 
-    def auto_equip_best_item(self) -> None:
-        candidate = best_item(self.player.inventory)
+    def auto_equip_best_item(self, slot: str) -> None:
+        candidate = best_item(self.player.inventory, slot=slot)
         if candidate is None:
             return
-        if candidate is self.player.equipped:
+
+        current = getattr(self.player, slot)
+        if candidate is current:
             return
-        previous = self.player.equipped.summary() if self.player.equipped else "nothing"
-        self.player.equipped = candidate
+        previous = current.summary() if current else "nothing"
+        setattr(self.player, slot, candidate)
         self.log(f"Auto-equip: swapping {previous} for {candidate.summary()}.")
 
     def prompt_equip(self, item: Item) -> None:
-        if self.player.equipped is None:
-            self.player.equipped = item
+        slot = item.slot
+        current: Item | None = getattr(self.player, slot)
+        if current is None:
+            setattr(self.player, slot, item)
             self.log(f"You equip {item.summary()}.")
             return
-        if item.score() <= self.player.equipped.score():
-            self.log(f"You stow the {item.name} for later, keeping {self.player.equipped.summary()} equipped.")
+        if item.score() <= current.score():
+            self.log(f"You stow the {item.name} for later, keeping {current.summary()} equipped.")
             return
 
         prompt = (
-            f"Equip {item.summary()} instead of {self.player.equipped.summary()}? "
+            f"Equip {item.summary()} to replace {current.summary()} in your {slot} slot? "
             "([y]es/[n]o): "
         )
         while True:
             choice = input(prompt).strip().lower()
             if choice in {"y", "yes"}:
-                self.player.equipped = item
+                setattr(self.player, slot, item)
                 self.log(f"You equip {item.summary()}.")
                 break
             if choice in {"n", "no"}:
-                self.log(f"You keep {self.player.equipped.summary()} equipped.")
+                self.log(f"You keep {current.summary()} equipped.")
                 break
             print("Please answer y or n.")
 
@@ -137,7 +207,7 @@ class Game:
             self.log(describe_combatants([self.player, foe]))
             enemy_action, intent = template.behavior.decide(foe, self.player, self.rng)
             self.log(f"{foe.name} signals intent: {intent} [{enemy_action.upper()}].")
-            player_action = self.choose_player_action()
+            player_action = self.choose_player_action(foe)
             self.resolve_player_action(player_action, foe)
             if not foe.stats.is_alive():
                 break
@@ -149,7 +219,6 @@ class Game:
             round((location.danger // 2 or 1) * location.reward_multiplier * template.loot_multiplier),
         )
         xp_gain = max(1, round(location.danger * template.xp_value * location.reward_multiplier))
-        self.experience += xp_gain
         self.player.stats.stamina = min(
             self.player.stats.stamina + loot, self.player.stats.awareness + 6
         )
@@ -157,22 +226,28 @@ class Game:
             f"Enemy defeated. You salvage {loot} stamina worth of supplies and gain "
             f"{xp_gain} insight."
         )
+        self.award_experience(xp_gain, "victory")
         dropped_item = roll_item_drop(self.rng, location.danger)
         if dropped_item:
             self.add_item_to_inventory(dropped_item)
+        dropped_consumable = roll_consumable_drop(self.rng, location.danger)
+        if dropped_consumable:
+            self.add_item_to_inventory(dropped_consumable)
         return True
 
-    def choose_player_action(self) -> str:
+    def choose_player_action(self, foe: Combatant) -> str:
         if self.settings.auto:
+            if self.should_use_consumable_auto(foe):
+                return "use"
             if self.player.stats.health <= 4:
                 return "recover"
             if self.player.stats.guard < 2 and self.player.stats.stamina < 3:
                 return "recover"
             return "attack"
-        prompt = "Choose action ([a]ttack, [g]uard, [r]ecover): "
+        prompt = "Choose action ([a]ttack, [g]uard, [r]ecover, [u]se consumable): "
         while True:
             choice = input(prompt).strip().lower()
-            mapping = {"a": "attack", "g": "guard", "r": "recover"}
+            mapping = {"a": "attack", "g": "guard", "r": "recover", "u": "use"}
             if choice in mapping:
                 return mapping[choice]
             if choice in mapping.values():
@@ -185,8 +260,113 @@ class Game:
             self.log(self.player.attack(foe, self.rng))
         elif action == "guard":
             self.log(self.player.guard())
+        elif action == "use":
+            if not self.use_consumable(in_combat=True, foe=foe):
+                self.log("No consumable used; you steady yourself instead.")
         else:
             self.log(self.player.recover())
+
+    def available_consumables(self, in_combat: bool) -> List[Consumable]:
+        return [
+            c
+            for c in self.player.consumables
+            if c.charges > 0 and (in_combat or not c.requires_target)
+        ]
+
+    def should_use_consumable_auto(self, foe: Combatant) -> bool:
+        consumables = self.available_consumables(in_combat=True)
+        if not consumables:
+            return False
+        if self.player.stats.health <= 4:
+            return any(c.name == "Healing Draught" for c in consumables)
+        if self.player.stats.stamina <= 2:
+            return any(c.name == "Stamina Tonic" for c in consumables)
+        if foe.stats.guard >= 2:
+            return any(c.name == "Shock Grenade" for c in consumables)
+        return False
+
+    def use_consumable(self, in_combat: bool, foe: Combatant | None = None) -> bool:
+        consumables = self.available_consumables(in_combat)
+        if not consumables:
+            return False
+
+        chosen: Consumable | None = None
+        if self.settings.auto:
+            chosen = self.auto_select_consumable(consumables, foe)
+        else:
+            chosen = self.prompt_select_consumable(consumables, in_combat)
+
+        if chosen is None:
+            return False
+
+        target = foe if chosen.requires_target else None
+        message = chosen.use(self.player, target, self.rng)
+        self.log(message)
+        return True
+
+    def auto_select_consumable(
+        self, consumables: List[Consumable], foe: Combatant | None
+    ) -> Consumable | None:
+        priority = [
+            "Healing Draught" if self.player.stats.health <= 5 else None,
+            "Stamina Tonic" if self.player.stats.stamina <= 2 else None,
+            "Shock Grenade" if foe and foe.stats.guard >= 1 else None,
+            "Focus Charm" if self.player.stats.skill < 6 else None,
+        ]
+        for desired in priority:
+            if desired is None:
+                continue
+            for c in consumables:
+                if c.name == desired:
+                    return c
+        return consumables[0] if consumables else None
+
+    def prompt_select_consumable(
+        self, consumables: List[Consumable], in_combat: bool
+    ) -> Consumable | None:
+        self.log("Choose a consumable to use:")
+        for idx, consumable in enumerate(consumables, start=1):
+            target_note = "(requires target)" if consumable.requires_target else "(self)"
+            self.log(f" {idx}. {consumable.summary()} {target_note} :: {consumable.description}")
+        self.log(" 0. Cancel")
+        prompt = "Select consumable number: "
+        while True:
+            try:
+                choice = int(input(prompt))
+            except ValueError:
+                print("Enter a number.")
+                continue
+            if choice == 0:
+                return None
+            if 1 <= choice <= len(consumables):
+                selected = consumables[choice - 1]
+                if in_combat and selected.requires_target is False:
+                    return selected
+                if in_combat and selected.requires_target is True:
+                    return selected
+                if not in_combat and selected.requires_target:
+                    print("That requires a target and cannot be used now.")
+                    continue
+                return selected
+            print("Invalid choice.")
+
+    def maybe_use_consumable_outside_combat(self, reason: str) -> None:
+        consumables = self.available_consumables(in_combat=False)
+        if not consumables:
+            return
+        if self.settings.auto:
+            if self.player.stats.health <= 6 or self.player.stats.stamina <= 2:
+                self.use_consumable(in_combat=False)
+            return
+        prompt = f"Use a consumable before {reason}? ([y]/[n]): "
+        while True:
+            choice = input(prompt).strip().lower()
+            if choice in {"y", "yes"}:
+                self.use_consumable(in_combat=False)
+                return
+            if choice in {"n", "no", ""}:
+                return
+            print("Please answer y or n.")
 
     def resolve_enemy_action(self, action: str, foe: Combatant, template: EnemyTemplate) -> None:
         if action == "guard":
@@ -208,19 +388,26 @@ class Game:
             self.log(effect)
 
     def handle_rest(self, location: Location) -> None:
+        self.maybe_use_consumable_outside_combat("resting")
         heal = max(1, round((2 + location.danger // 2) * location.reward_multiplier))
         stamina = max(2, round(3 * location.reward_multiplier))
         self.player.stats.health = min(self.player.stats.health + heal, self.player.stats.awareness + 10)
         self.player.stats.stamina = min(self.player.stats.stamina + stamina, self.player.stats.awareness + 6)
         self.log(f"Safe pocket: you rest, healing {heal} and restoring {stamina} stamina.")
         self.log("Status :: " + describe_combatants([self.player]))
+        self.award_experience(1, "resting and reflecting")
 
     def handle_event(self, location: Location) -> None:
+        self.maybe_use_consumable_outside_combat("facing the event")
         narration, outcome, item = resolve_event(self.player, location.danger, self.rng)
         self.log(f"Event: {narration}")
         self.log(outcome)
         if item:
             self.add_item_to_inventory(item)
+        bonus_consumable = roll_consumable_drop(self.rng, location.danger)
+        if bonus_consumable:
+            self.add_item_to_inventory(bonus_consumable)
+        self.award_experience(1, "learning from the encounter")
         self.log("Status :: " + describe_combatants([self.player]))
 
     def choose_next_step(self, location: Location) -> Exit:
