@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Iterable, List
 import random
 
-from .items import Item
+from .items import Consumable, Item
 
 
 @dataclass
@@ -39,7 +39,10 @@ class Combatant:
     name: str
     stats: Stats
     inventory: List[Item] = field(default_factory=list)
-    equipped: Item | None = None
+    consumables: List[Consumable] = field(default_factory=list)
+    weapon: Item | None = None
+    armor: Item | None = None
+    trinket: Item | None = None
 
     @property
     def damage_bonus(self) -> int:
@@ -54,9 +57,11 @@ class Combatant:
         return sum(item.recovery_bonus for item in self._equipped_items())
 
     def _equipped_items(self) -> List[Item]:
-        if self.equipped:
-            return [self.equipped]
-        return []
+        equipped: List[Item] = []
+        for item in (self.weapon, self.armor, self.trinket):
+            if item:
+                equipped.append(item)
+        return equipped
 
     def attack(self, target: "Combatant", rng: random.Random) -> str:
         """Performs a basic attack against a target."""
@@ -88,7 +93,12 @@ def describe_combatants(combatants: Iterable[Combatant]) -> str:
     """Returns a summary line describing combatants and their stats."""
     summaries = []
     for c in combatants:
-        gear = c.equipped.summary() if c.equipped else "unarmed"
+        gear_pieces = [
+            c.weapon.summary() if c.weapon else "bare hands",
+            c.armor.summary() if c.armor else "no armor",
+            c.trinket.summary() if c.trinket else "no trinket",
+        ]
+        gear = "/".join(gear_pieces)
         guard_total = c.stats.guard + c.guard_bonus
         summaries.append(
             f"{c.name}: HP {c.stats.health}, ST {c.stats.stamina}, SK {c.stats.skill}, "
