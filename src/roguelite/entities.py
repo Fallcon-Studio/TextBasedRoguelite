@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable
+from dataclasses import dataclass, field
+from typing import Iterable, List
 import random
+
+from .items import Item
 
 
 @dataclass
@@ -36,10 +38,29 @@ class Combatant:
 
     name: str
     stats: Stats
+    inventory: List[Item] = field(default_factory=list)
+    equipped: Item | None = None
+
+    @property
+    def damage_bonus(self) -> int:
+        return sum(item.damage_bonus for item in self._equipped_items())
+
+    @property
+    def guard_bonus(self) -> int:
+        return sum(item.guard_bonus for item in self._equipped_items())
+
+    @property
+    def recovery_bonus(self) -> int:
+        return sum(item.recovery_bonus for item in self._equipped_items())
+
+    def _equipped_items(self) -> List[Item]:
+        if self.equipped:
+            return [self.equipped]
+        return []
 
     def attack(self, target: "Combatant", rng: random.Random) -> str:
         """Performs a basic attack against a target."""
-        damage = max(1, self.stats.skill - target.stats.guard)
+        damage = max(1, (self.stats.skill + self.damage_bonus) - (target.stats.guard + target.guard_bonus))
         variance = rng.choice([-1, 0, 0, 1])
         damage = max(1, damage + variance)
         target.stats.health -= damage
@@ -48,12 +69,13 @@ class Combatant:
     def guard(self) -> str:
         """Raises guard to reduce incoming damage for the next turn."""
         self.stats.guard = min(self.stats.guard + 1, 4)
-        return f"{self.name} braces, increasing guard to {self.stats.guard}."
+        total_guard = self.stats.guard + self.guard_bonus
+        return f"{self.name} braces, increasing guard to {total_guard}."
 
     def recover(self) -> str:
         """Recover stamina and a small amount of health."""
-        stamina_gain = 2
-        health_gain = 1
+        stamina_gain = 2 + self.recovery_bonus
+        health_gain = 1 + max(0, self.recovery_bonus - 1)
         self.stats.stamina = min(self.stats.stamina + stamina_gain, self.stats.awareness + 6)
         self.stats.health = min(self.stats.health + health_gain, self.stats.awareness + 10)
         return (
@@ -66,7 +88,10 @@ def describe_combatants(combatants: Iterable[Combatant]) -> str:
     """Returns a summary line describing combatants and their stats."""
     summaries = []
     for c in combatants:
+        gear = c.equipped.summary() if c.equipped else "unarmed"
+        guard_total = c.stats.guard + c.guard_bonus
         summaries.append(
-            f"{c.name}: HP {c.stats.health}, ST {c.stats.stamina}, SK {c.stats.skill}, AW {c.stats.awareness}, GD {c.stats.guard}"
+            f"{c.name}: HP {c.stats.health}, ST {c.stats.stamina}, SK {c.stats.skill}, "
+            f"AW {c.stats.awareness}, GD {guard_total} | Gear: {gear}"
         )
     return " | ".join(summaries)

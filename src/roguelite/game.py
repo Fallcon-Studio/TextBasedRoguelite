@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import List
 
 from .entities import Combatant, Stats, describe_combatants
+from .items import Item, best_item, roll_item_drop
 from .events import resolve_event
 from .world import Location, generate_world
 
@@ -34,6 +35,48 @@ class Game:
     def log(self, entry: str) -> None:
         self.journal.append(entry)
         print(entry)
+
+    def add_item_to_inventory(self, item: Item) -> None:
+        self.player.inventory.append(item)
+        self.log(f"You obtain {item.summary()}. {item.description}")
+        if self.settings.auto:
+            self.auto_equip_best_item()
+        else:
+            self.prompt_equip(item)
+
+    def auto_equip_best_item(self) -> None:
+        candidate = best_item(self.player.inventory)
+        if candidate is None:
+            return
+        if candidate is self.player.equipped:
+            return
+        previous = self.player.equipped.summary() if self.player.equipped else "nothing"
+        self.player.equipped = candidate
+        self.log(f"Auto-equip: swapping {previous} for {candidate.summary()}.")
+
+    def prompt_equip(self, item: Item) -> None:
+        if self.player.equipped is None:
+            self.player.equipped = item
+            self.log(f"You equip {item.summary()}.")
+            return
+        if item.score() <= self.player.equipped.score():
+            self.log(f"You stow the {item.name} for later, keeping {self.player.equipped.summary()} equipped.")
+            return
+
+        prompt = (
+            f"Equip {item.summary()} instead of {self.player.equipped.summary()}? "
+            "([y]es/[n]o): "
+        )
+        while True:
+            choice = input(prompt).strip().lower()
+            if choice in {"y", "yes"}:
+                self.player.equipped = item
+                self.log(f"You equip {item.summary()}.")
+                break
+            if choice in {"n", "no"}:
+                self.log(f"You keep {self.player.equipped.summary()} equipped.")
+                break
+            print("Please answer y or n.")
 
     def play(self) -> bool:
         self.log("\n=== Text Roguelite Expedition ===")
@@ -82,6 +125,9 @@ class Game:
         loot = max(1, location.danger // 2)
         self.player.stats.stamina = min(self.player.stats.stamina + loot, self.player.stats.awareness + 6)
         self.log(f"Enemy defeated. You salvage {loot} stamina worth of supplies.")
+        dropped_item = roll_item_drop(self.rng, location.danger)
+        if dropped_item:
+            self.add_item_to_inventory(dropped_item)
         return True
 
     def choose_player_action(self) -> str:
@@ -131,7 +177,9 @@ class Game:
         self.log("Status :: " + describe_combatants([self.player]))
 
     def handle_event(self, location: Location) -> None:
-        narration, outcome = resolve_event(self.player, location.danger, self.rng)
+        narration, outcome, item = resolve_event(self.player, location.danger, self.rng)
         self.log(f"Event: {narration}")
         self.log(outcome)
+        if item:
+            self.add_item_to_inventory(item)
         self.log("Status :: " + describe_combatants([self.player]))
