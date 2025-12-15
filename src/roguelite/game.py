@@ -9,7 +9,7 @@ from typing import List
 from .entities import Combatant, Stats, describe_combatants
 from .enemies import EnemyTemplate, pick_enemy_template
 from .items import Consumable, Item, best_item, roll_consumable_drop, roll_item_drop
-from .events import resolve_event
+from .events import EventOption, EventScenario, resolve_event
 from .world import Exit, Location, WorldGraph, generate_world
 
 
@@ -37,6 +37,33 @@ class Game:
         self.experience: int = 0
         self.level: int = 1
         self.xp_to_next: int = 5
+
+    def describe_status_effects(self, context: str) -> None:
+        if not self.player.statuses:
+            return
+        notes: List[str] = []
+        if self.player.has_status("scouted"):
+            notes.append("scouted (+guard/+awareness)")
+        if self.player.has_status("inspired"):
+            notes.append("inspired (+skill/+awareness)")
+        if self.player.has_status("cursed"):
+            notes.append("cursed (-skill/-guard)")
+        self.log(f"Statuses for this {context}: {', '.join(notes)}")
+
+    def grant_status(self, name: str, duration: int, source: str) -> None:
+        previous = self.player.statuses.get(name)
+        self.player.add_status(name, duration)
+        label = f"{name} for {self.player.statuses[name]} encounters ({source})."
+        if previous:
+            self.log(f"Status refreshed: {label}")
+        else:
+            self.log(f"Status gained: {label}")
+
+    def decay_statuses(self, context: str) -> None:
+        expired = self.player.tick_statuses()
+        if expired:
+            faded = ", ".join(expired)
+            self.log(f"Statuses fade after the {context}: {faded}.")
 
     def log(self, entry: str) -> None:
         self.journal.append(entry)
@@ -202,6 +229,7 @@ class Game:
             f"A {template.title.lower()} emerges: {template.description}. "
             f"Threat level {location.danger}."
         )
+        self.describe_status_effects("combat")
         while foe.stats.is_alive() and self.player.stats.is_alive():
             self.log("-- Combat Round --")
             self.log(describe_combatants([self.player, foe]))
@@ -233,6 +261,7 @@ class Game:
         dropped_consumable = roll_consumable_drop(self.rng, location.danger)
         if dropped_consumable:
             self.add_item_to_inventory(dropped_consumable)
+        self.decay_statuses("combat")
         return True
 
     def choose_player_action(self, foe: Combatant) -> str:
@@ -368,6 +397,42 @@ class Game:
                 return
             print("Please answer y or n.")
 
+    def auto_pick_event_option(self, options: List[EventOption]) -> EventOption:
+        def score(option: EventOption) -> int:
+            base = {"safe": 3, "balanced": 2, "trade": 2, "risky": 1}.get(
+                option.risk, 2
+            )
+            if self.player.stats.health <= 4 and option.risk == "risky":
+                base -= 1
+            if self.player.stats.stamina <= 2 and option.risk == "trade":
+                base -= 1
+            if self.player.has_status("inspired") and option.risk == "risky":
+                base += 1
+            return base
+
+        return max(options, key=score)
+
+    def choose_event_option(self, scenario: EventScenario) -> EventOption:
+        self.log("Choose how to respond:")
+        for idx, option in enumerate(scenario.options, start=1):
+            self.log(f" {idx}. {option.title} [{option.risk}] :: {option.detail}")
+
+        if self.settings.auto:
+            selected = self.auto_pick_event_option(scenario.options)
+            self.log(f"Auto-pick event response: {selected.title} ({selected.risk}).")
+            return selected
+
+        prompt = "Select option number: "
+        while True:
+            try:
+                choice = int(input(prompt))
+            except ValueError:
+                print("Enter a listed number.")
+                continue
+            if 1 <= choice <= len(scenario.options):
+                return scenario.options[choice - 1]
+            print("Invalid selection.")
+
     def resolve_enemy_action(self, action: str, foe: Combatant, template: EnemyTemplate) -> None:
         if action == "guard":
             self.log(foe.guard())
@@ -396,19 +461,31 @@ class Game:
         self.log(f"Safe pocket: you rest, healing {heal} and restoring {stamina} stamina.")
         self.log("Status :: " + describe_combatants([self.player]))
         self.award_experience(1, "resting and reflecting")
+        self.decay_statuses("rest")
 
     def handle_event(self, location: Location) -> None:
         self.maybe_use_consumable_outside_combat("facing the event")
-        narration, outcome, item = resolve_event(self.player, location.danger, self.rng)
-        self.log(f"Event: {narration}")
-        self.log(outcome)
-        if item:
-            self.add_item_to_inventory(item)
+        scenario = resolve_event(self, location, self.rng)
+        self.log(f"Event: {scenario.title} [{location.biome.title}]")
+        self.log(scenario.intro)
+        self.describe_status_effects("event")
+        choice = self.choose_event_option(scenario)
+        self.log(f"You choose: {choice.title}. {choice.detail}")
+        outcome = choice.resolver(self.player, self, location, self.rng)
+        self.log(outcome.narration)
+        self.log(outcome.outcome)
+        for name, duration, source in outcome.status_effects:
+            self.grant_status(name, duration, source)
+        if outcome.item:
+            self.add_item_to_inventory(outcome.item)
+        if outcome.consumable:
+            self.add_item_to_inventory(outcome.consumable)
         bonus_consumable = roll_consumable_drop(self.rng, location.danger)
         if bonus_consumable:
             self.add_item_to_inventory(bonus_consumable)
         self.award_experience(1, "learning from the encounter")
         self.log("Status :: " + describe_combatants([self.player]))
+        self.decay_statuses("event")
 
     def choose_next_step(self, location: Location) -> Exit:
         self.log("Paths branch ahead:")
