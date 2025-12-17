@@ -41,6 +41,7 @@ class DecayManager:
     def _sync_location(self, location: Location, state: DecayState) -> None:
         location.decay_stage = DECAY_STAGES[state.stage_index]
         location.decay_duration = state.duration
+        location.decay_remaining = max(0, state.remaining)
         location.removed = state.stage_index >= len(DECAY_STAGES) - 1
 
     def advance_frontier(

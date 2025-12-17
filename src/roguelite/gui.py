@@ -259,17 +259,9 @@ class GuiGame(Game):
         self.ui.show_frontier(frontier)
         self.ui.refresh_status(self.player)
         choices: List[Choice] = []
+        visibility = self.player_decay_visibility()
         for idx, option in enumerate(frontier.options, start=1):
-            exit = option.exit
-            if option.placeholder:
-                label = f"{idx}. {exit.label} :: {option.reason}"
-            else:
-                destination = option.location
-                note = f" [{exit.note}]" if exit.note else ""
-                label = (
-                    f"{idx}. {exit.label} toward {destination.name} "
-                    f"(cost {exit.cost} stamina, danger {destination.danger}, {destination.biome.title}){note}"
-                )
+            label = self.format_frontier_option_label(idx, option, visibility).strip()
             choices.append((label, str(idx)))
         prompt = "Paths branch ahead. Choose your route"
         selection = self.ui.prompt_choice(prompt, choices)
