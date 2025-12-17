@@ -19,3 +19,17 @@
 
 ## Notes:
  - Zone time cost now derives from biome travel cost except rest locations which use zero, aligning decay processing.
+
+## Time and Date:
+ - Tue Dec 16 20:50:07 CST 2025
+
+## Changes made:
+ - Added awareness helpers to drive frontier bonus calculations and decay visibility tiers.
+ - Surfaced decay stage, hints, or exact timing on frontier options based on player Awareness for both CLI and GUI flows.
+ - Synced decay state to track remaining time for display and relied on effective Awareness when building frontier size.
+
+## Reason for changes:
+ - Implement Awareness thresholds controlling frontier size bonuses and information detail per design guidance.
+
+## Notes:
+ - Decay visibility now scales with Awareness bands; exact timing appears only at higher Awareness.

@@ -10,6 +10,7 @@ from .entities import Combatant, Stats, describe_combatants
 from .enemies import EnemyTemplate, pick_enemy_template
 from .items import Consumable, Item, best_item, roll_consumable_drop, roll_item_drop
 from .events import EventOption, EventScenario, resolve_event
+from .awareness import decay_visibility_band, format_decay_detail
 from .decay import DecayManager
 from .world import (
     Exit,
@@ -49,6 +50,28 @@ class Game:
         self.level: int = 1
         self.xp_to_next: int = 5
         self.frontier_state: FrontierState | None = None
+
+    def player_decay_visibility(self) -> str:
+        return decay_visibility_band(self.player.effective_awareness())
+
+    def format_frontier_option_label(
+        self, idx: int, option: FrontierOption, visibility: str
+    ) -> str:
+        exit = option.exit
+        if option.placeholder:
+            return f" {idx}. {exit.label} :: {option.reason}"
+
+        destination = option.location
+        assert destination is not None
+        note = f" [{exit.note}]" if exit.note else ""
+        decay_info = format_decay_detail(
+            destination.decay_stage, destination.decay_remaining, visibility
+        )
+        return (
+            f" {idx}. {exit.label} toward {destination.name} "
+            f"(cost {exit.cost} stamina, danger {destination.danger}, "
+            f"{destination.biome.title}) | Decay: {decay_info}{note}"
+        )
 
     def describe_status_effects(self, context: str) -> None:
         if not self.player.statuses:
@@ -294,10 +317,11 @@ class Game:
         if self.frontier_state and self.frontier_state.source_location_id == location.id:
             return self.frontier_state
 
+        awareness = self.player.effective_awareness()
         self.frontier_state = build_frontier_state(
             location,
             self.world,
-            self.player.stats.awareness,
+            awareness,
             rng=self.rng,
         )
         return self.frontier_state
@@ -591,17 +615,9 @@ class Game:
             self.log(f" Negative modifiers: {negative_notes}.")
 
         self.log("Paths branch ahead:")
+        visibility = self.player_decay_visibility()
         for idx, option in enumerate(frontier.options, start=1):
-            exit = option.exit
-            if option.placeholder:
-                self.log(f" {idx}. {exit.label} :: {option.reason}")
-                continue
-            destination = option.location
-            note = f" [{exit.note}]" if exit.note else ""
-            self.log(
-                f" {idx}. {exit.label} toward {destination.name} (cost {exit.cost} stamina, "
-                f"danger {destination.danger}, {destination.biome.title}){note}"
-            )
+            self.log(self.format_frontier_option_label(idx, option, visibility))
 
         if self.settings.auto:
             return min(

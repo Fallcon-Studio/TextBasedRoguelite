@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Sequence
-import random
+
+from .awareness import frontier_modifier_from_awareness
 
 
 @dataclass
@@ -45,6 +47,7 @@ class Location:
     exits: List[Exit] = field(default_factory=list)
     decay_stage: str = "Fresh"
     decay_duration: int = 0
+    decay_remaining: int = 0
     removed: bool = False
 
 
@@ -259,7 +262,7 @@ def compute_frontier_size(
     extra_negative: Sequence[FrontierModifier] | None = None,
 ) -> FrontierSize:
     size = FrontierSize()
-    awareness_bonus = player_awareness // 5
+    awareness_bonus = frontier_modifier_from_awareness(player_awareness)
     if awareness_bonus:
         size.positive.append(
             FrontierModifier(
