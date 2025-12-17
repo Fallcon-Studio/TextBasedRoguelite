@@ -6,6 +6,7 @@ import argparse
 from typing import Optional
 
 from .game import Game, GameSettings
+from .gui import launch_gui
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -20,8 +21,12 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
     settings = GameSettings(seed=args.seed, steps=args.steps, auto=args.auto)
-    game = Game(settings)
-    game.play()
+    if settings.auto:
+        game = Game(settings)
+        game.play()
+        return
+
+    launch_gui(settings)
 
 
 if __name__ == "__main__":
