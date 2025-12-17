@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from typing import List
+from typing import List, Sequence
 
 from .entities import Combatant, Stats, describe_combatants
 from .enemies import EnemyTemplate, pick_enemy_template
@@ -197,20 +197,22 @@ class Game:
             location = self.world.nodes[self.current_location_id]
             self.route_taken.append(location.name)
             self.describe_location(location)
+            time_modifiers: List[int] = []
             if location.encounter == "enemy":
-                survived = self.handle_combat(location)
+                survived, combat_time = self.handle_combat(location)
+                time_modifiers.extend(combat_time)
                 if not survived:
                     self.log("You collapse. The expedition ends here.")
                     return False
             elif location.encounter == "rest":
-                self.handle_rest(location)
+                time_modifiers.extend(self.handle_rest(location))
             else:
-                self.handle_event(location)
+                time_modifiers.extend(self.handle_event(location))
 
             if not self.player.stats.is_alive():
                 self.log("Your injuries are too severe to continue.")
                 return False
-            if self.apply_zone_time_cost(location) is False:
+            if self.apply_zone_time_cost(location, time_modifiers) is False:
                 return False
             frontier = self.prepare_frontier(location)
             if not frontier.options:
@@ -245,7 +247,7 @@ class Game:
         self.log(f"Route so far: {breadcrumb}")
 
     def zone_time_cost(self, location: Location) -> int:
-        return max(1, location.biome.travel_cost)
+        return location.zone_time_cost
 
     def frontier_destinations(self, location: Location) -> List[str]:
         return [
@@ -254,8 +256,17 @@ class Game:
             if not self.world.nodes[exit.destination].removed
         ]
 
-    def apply_zone_time_cost(self, location: Location, modifiers: int = 0) -> bool:
-        time_spent = self.zone_time_cost(location) + modifiers
+    def apply_zone_time_cost(
+        self, location: Location, modifiers: Sequence[int] | None = None
+    ) -> bool:
+        modifier_list = list(modifiers or [])
+        base_time = self.zone_time_cost(location)
+        time_components = [("zone time", base_time)] + [
+            (f"modifier {idx + 1}", value) for idx, value in enumerate(modifier_list)
+        ]
+        time_spent = sum(component for _, component in time_components)
+        detail = ", ".join(f"{label} {value:+}" for label, value in time_components)
+        self.log(f"Time spent resolving this location: {time_spent} ({detail}).")
         frontier_ids = self.frontier_destinations(location)
         removed = self.decay_manager.advance_frontier(time_spent, self.world, frontier_ids)
         if removed:
@@ -291,7 +302,7 @@ class Game:
         )
         return self.frontier_state
 
-    def handle_combat(self, location: Location) -> bool:
+    def handle_combat(self, location: Location) -> tuple[bool, List[int]]:
         template = pick_enemy_template(location.biome.key, location.danger, self.rng)
         foe = template.spawn(location.danger, self.rng)
         self.log(
@@ -310,7 +321,7 @@ class Game:
                 break
             self.resolve_enemy_action(enemy_action, foe, template)
         if foe.stats.is_alive():
-            return False
+            return False, [0]
         loot = max(
             1,
             round((location.danger // 2 or 1) * location.reward_multiplier * template.loot_multiplier),
@@ -331,7 +342,7 @@ class Game:
         if dropped_consumable:
             self.add_item_to_inventory(dropped_consumable)
         self.decay_statuses("combat")
-        return True
+        return True, [0]
 
     def choose_player_action(self, foe: Combatant) -> str:
         if self.settings.auto:
@@ -521,7 +532,7 @@ class Game:
         if effect:
             self.log(effect)
 
-    def handle_rest(self, location: Location) -> None:
+    def handle_rest(self, location: Location) -> List[int]:
         self.maybe_use_consumable_outside_combat("resting")
         heal = max(1, round((2 + location.danger // 2) * location.reward_multiplier))
         stamina = max(2, round(3 * location.reward_multiplier))
@@ -531,10 +542,14 @@ class Game:
         self.log("Status :: " + describe_combatants([self.player]))
         self.award_experience(1, "resting and reflecting")
         self.decay_statuses("rest")
+        return [0]
 
-    def handle_event(self, location: Location) -> None:
+    def handle_event(self, location: Location) -> List[int]:
+        if location.event_resolved:
+            self.log("This site's event has already been settled.")
+            return [0]
         self.maybe_use_consumable_outside_combat("facing the event")
-        scenario = resolve_event(self, location, self.rng)
+        scenario, scenario_time_modifiers = resolve_event(self, location, self.rng)
         self.log(f"Event: {scenario.title} [{location.biome.title}]")
         self.log(scenario.intro)
         self.describe_status_effects("event")
@@ -555,6 +570,8 @@ class Game:
         self.award_experience(1, "learning from the encounter")
         self.log("Status :: " + describe_combatants([self.player]))
         self.decay_statuses("event")
+        location.event_resolved = True
+        return scenario_time_modifiers + outcome.time_modifiers
 
     def choose_frontier_option(self, frontier: FrontierState) -> FrontierOption:
         size = frontier.size
