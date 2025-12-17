@@ -41,6 +41,9 @@ class Location:
     description: str
     reward_multiplier: float
     exits: List[Exit] = field(default_factory=list)
+    decay_stage: str = "Fresh"
+    decay_duration: int = 0
+    removed: bool = False
 
 
 @dataclass
