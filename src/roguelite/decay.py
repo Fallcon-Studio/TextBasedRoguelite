@@ -10,6 +10,7 @@ from .world import Location, WorldGraph
 
 
 DECAY_STAGES = ["Fresh", "Fading", "Withering", "Removed"]
+DECAY_DURATION_RANGE = (2, 4)
 
 
 @dataclass
@@ -29,11 +30,11 @@ class DecayManager:
         self.time_elapsed: int = 0
         self.state: Dict[str, DecayState] = {}
 
-    def initialize_locations(self, locations: Dict[str, Location]) -> None:
+    def initialize_locations(self, locations: Dict[str, Location], instability: float) -> None:
         """Seed decay states for all locations in the run."""
 
         for location in locations.values():
-            duration = self.rng.randint(2, 4)
+            duration = self._roll_decay_duration(instability)
             state = DecayState(stage_index=0, remaining=duration, duration=duration)
             self.state[location.id] = state
             self._sync_location(location, state)
@@ -45,7 +46,11 @@ class DecayManager:
         location.removed = state.stage_index >= len(DECAY_STAGES) - 1
 
     def advance_frontier(
-        self, time_spent: int, world: WorldGraph, frontier_ids: Iterable[str]
+        self,
+        time_spent: int,
+        world: WorldGraph,
+        frontier_ids: Iterable[str],
+        instability: float,
     ) -> List[str]:
         """Advance decay for the visible frontier and return removed locations."""
 
@@ -66,7 +71,9 @@ class DecayManager:
                 state.stage_index += 1
                 if state.stage_index >= len(DECAY_STAGES) - 1:
                     break
-                state.remaining += state.duration
+                new_duration = self._roll_decay_duration(instability)
+                state.duration = new_duration
+                state.remaining += new_duration
 
             location = world.nodes[loc_id]
             self._sync_location(location, state)
@@ -74,3 +81,33 @@ class DecayManager:
                 removed.append(loc_id)
 
         return removed
+
+    def _roll_decay_duration(self, instability: float) -> int:
+        """Roll a decay duration using instability-weighted extremes and inner values."""
+
+        minimum, maximum = DECAY_DURATION_RANGE
+        if maximum <= minimum:
+            return minimum
+
+        clamped_instability = max(0.0, min(10.0, instability))
+        if clamped_instability < 3:
+            extreme_weight, inner_weight = 0, 10
+        elif clamped_instability < 6:
+            extreme_weight, inner_weight = 4, 6
+        elif clamped_instability < 9:
+            extreme_weight, inner_weight = 6, 4
+        else:
+            extreme_weight, inner_weight = 10, 0
+
+        values = list(range(minimum, maximum + 1))
+        weights: List[int] = []
+        for value in values:
+            if value in {minimum, maximum}:
+                weights.append(extreme_weight)
+            else:
+                weights.append(inner_weight)
+
+        if all(weight == 0 for weight in weights):
+            weights = [1 for _ in weights]
+
+        return self.rng.choices(values, weights=weights, k=1)[0]

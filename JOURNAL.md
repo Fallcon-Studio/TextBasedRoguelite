@@ -33,3 +33,17 @@
 
 ## Notes:
  - Decay visibility now scales with Awareness bands; exact timing appears only at higher Awareness.
+
+## Time and Date:
+ - Tue Dec 16 20:54:58 CST 2025
+
+## Changes made:
+ - Introduced a run-level instability setting stored on the Game and used to seed decay state initialization.
+ - Added instability-weighted decay duration rolls, rerolling durations on each decay stage change with the seeded RNG.
+ - Ensured frontier shuffling uses the run RNG so frontier presentation remains deterministic per seed.
+
+## Reason for changes:
+ - Apply the specified volatility bias from world instability and guarantee seeded reproducibility for decay and frontier generation.
+
+## Notes:
+ - Instability defaults to zero and follows the documented weight tiers when biasing decay durations.

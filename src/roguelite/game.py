@@ -28,6 +28,7 @@ class GameSettings:
     seed: int | None
     steps: int = 6
     auto: bool = False
+    instability: float = 0.0
 
 
 class Game:
@@ -36,13 +37,14 @@ class Game:
     def __init__(self, settings: GameSettings):
         self.settings = settings
         self.rng = random.Random(settings.seed)
+        self.instability: float = settings.instability
         self.player = Combatant(
             name="Drifter",
             stats=Stats(health=12, stamina=8, skill=4, awareness=4),
         )
         self.world: WorldGraph = generate_world(settings.seed, settings.steps)
         self.decay_manager = DecayManager(self.rng)
-        self.decay_manager.initialize_locations(self.world.nodes)
+        self.decay_manager.initialize_locations(self.world.nodes, self.instability)
         self.current_location_id = self.world.start
         self.route_taken: List[str] = []
         self.journal: List[str] = []
@@ -291,7 +293,9 @@ class Game:
         detail = ", ".join(f"{label} {value:+}" for label, value in time_components)
         self.log(f"Time spent resolving this location: {time_spent} ({detail}).")
         frontier_ids = self.frontier_destinations(location)
-        removed = self.decay_manager.advance_frontier(time_spent, self.world, frontier_ids)
+        removed = self.decay_manager.advance_frontier(
+            time_spent, self.world, frontier_ids, self.instability
+        )
         if removed:
             for loc_id in removed:
                 self.log(f"The way to {self.world.nodes[loc_id].name} collapses in decay.")
