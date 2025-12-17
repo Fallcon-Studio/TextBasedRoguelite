@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Iterable, List, Sequence
+from typing import Any, Callable, Iterable, List, Sequence, TYPE_CHECKING
 import random
 
-if False:  # pragma: no cover - for type checking without circular import
+if TYPE_CHECKING:  # pragma: no cover - for type checking without circular import
     from .entities import Combatant
+else:  # pragma: no cover - runtime fallback to satisfy type aliases
+    Combatant = Any
 
 
-ConsumableEffect = Callable[["Combatant", "Combatant" | None, random.Random], str]
+ConsumableEffect = Callable[[Combatant, Combatant | None, random.Random], str]
 
 
 @dataclass
