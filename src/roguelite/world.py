@@ -40,6 +40,8 @@ class Location:
     encounter: str  # enemy, rest, event
     description: str
     reward_multiplier: float
+    zone_time_cost: int
+    event_resolved: bool = False
     exits: List[Exit] = field(default_factory=list)
     decay_stage: str = "Fresh"
     decay_duration: int = 0
@@ -168,6 +170,7 @@ def _build_location(rng: random.Random, idx: int) -> Location:
     name = f"{rng.choice(['Forsaken', 'Shaded', 'Broken', 'Forgotten', 'Hidden'])} {biome.title}"
     description = f"You reach {flavor}. Threat level {danger}."
     reward_multiplier = biome.reward_multiplier + (0.05 * (danger - 1))
+    zone_time_cost = 0 if encounter == "rest" else biome.travel_cost
     return Location(
         id=f"loc-{idx}",
         name=name,
@@ -176,6 +179,7 @@ def _build_location(rng: random.Random, idx: int) -> Location:
         encounter=encounter,
         description=description,
         reward_multiplier=reward_multiplier,
+        zone_time_cost=zone_time_cost,
     )
 
 

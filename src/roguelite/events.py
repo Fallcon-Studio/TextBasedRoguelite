@@ -23,6 +23,7 @@ class EventOutcome:
     item: Item | None = None
     consumable: Consumable | None = None
     status_effects: List[Tuple[str, int, str]] = field(default_factory=list)
+    time_modifiers: List[int] = field(default_factory=lambda: [0])
 
 
 @dataclass
@@ -306,8 +307,10 @@ SCENARIOS: List[EventScenario] = [
 ]
 
 
-def resolve_event(game: "Game", location: "Location", rng: random.Random) -> EventScenario:
-    """Select an event scenario appropriate to the biome."""
+def resolve_event(
+    game: "Game", location: "Location", rng: random.Random
+) -> Tuple[EventScenario, List[int]]:
+    """Select an event scenario appropriate to the biome and its time impact."""
 
     candidates: List[EventScenario] = []
     for scenario in SCENARIOS:
@@ -315,4 +318,4 @@ def resolve_event(game: "Game", location: "Location", rng: random.Random) -> Eve
             candidates.append(scenario)
     if not candidates:
         candidates = SCENARIOS
-    return rng.choice(candidates)
+    return rng.choice(candidates), [0]
