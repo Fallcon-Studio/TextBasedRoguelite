@@ -1,0 +1,14 @@
+README.md
+pyproject.toml
+src/roguelite/__init__.py
+src/roguelite/__main__.py
+src/roguelite/cli.py
+src/roguelite/entities.py
+src/roguelite/events.py
+src/roguelite/game.py
+src/roguelite/world.py
+src/textbased_roguelite.egg-info/PKG-INFO
+src/textbased_roguelite.egg-info/SOURCES.txt
+src/textbased_roguelite.egg-info/dependency_links.txt
+src/textbased_roguelite.egg-info/entry_points.txt
+src/textbased_roguelite.egg-info/top_level.txt

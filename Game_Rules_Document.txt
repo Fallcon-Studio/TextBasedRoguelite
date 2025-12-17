@@ -1,0 +1,1666 @@
+==== SECTION S00: Text Roguelike — Core Design & System Specification ====
+
+This document defines the authoritative rules and systems for the text-driven roguelike project. It is intended to be handed to other AI assistants or programmers and used as a single source of truth. All mechanics described here are explicit, deterministic, and designed to avoid ambiguity or hidden penalties.
+
+==== SECTION S01: Core Design Principles ====
+
+GUI-first, text-driven: The game must be implemented with a lightweight GUI. No custom art assets are required. All information is presented via standard UI controls (panels, lists, tables, buttons). A terminal-only version is explicitly out of scope.
+
+Explicit information: The player always knows exact costs and exact threats before committing. Outcomes are fully explicit once they are presented, but undiscovered content (e.g., future events within a location) is not previewed in advance.
+
+No hidden timers: All time advancement and decay is declared up front.
+
+Difficulty from pressure, not guessing: Challenge comes from time pressure, resource constraints, and irreversible consequences.
+
+Fairness contract: If the player fails, they can always explain why.
+
+==== SECTION S02: Time Model (Authoritative) ====
+
+---- SUBSECTION S02.01: Time ----
+
+Time is integer-based only and never fractional.
+
+Time advances only after a location is fully resolved.
+
+There are no implicit, cleanup, or per-turn ticks.
+
+---- SUBSECTION S02.02: Zone Time Cost ----
+
+Every location lists a fixed Zone Time Cost.
+
+Zone Time Cost represents the amount of time required to travel to that location.
+
+Zone Time Cost is declared up front and does not change based on combat length or player actions within the location.
+
+After a location is fully resolved, total time lost is calculated as an additive value composed of:
+
+Zone Time Cost
+
+Plus any additional time added or removed by events or other explicit effects resolved within the location
+
+This final total time lost is applied once, after resolution, and is then used as the input for decay calculations.
+
+Decay calculations subtract any applicable decay mitigation at this stage when determining decay advancement of frontier locations.
+
+---- SUBSECTION S02.03: Combat & Events ----
+
+Combat length (number of turns) does not affect time.
+
+A location can never contain multiple events that trigger separately; at most one event resolves per location.
+
+Event options may add, reduce, or keep time at 0; this is always explicit.
+
+If, due to an edge case or future system interaction, multiple time modifiers are applied during a single location resolution, all modifiers are added together when calculating total time lost.
+
+==== SECTION S03: Decay System ====
+
+---- SUBSECTION S03.01: Decay Stages ----
+
+Each location exists in one of five stages, each with a variable duration rolled immediately upon entering the stage:
+
+Secure — 3–6 time units
+
+Solid — 2–4 time units
+
+Unstable — 1–4 time units
+
+Critical — 1–2 time units
+
+Removed — unreachable
+
+For newly generated frontier locations, the initial decay stage listed on the location definition is entered immediately at generation time, and that stage’s duration is rolled at that moment.
+
+All rolls are seeded and deterministic per run.
+
+---- SUBSECTION S03.02: Decay Advancement ----
+
+Locations advance decay only when time advances.
+
+When time advances by multiple units at once, decay is processed in bulk:
+
+The full time amount is subtracted immediately from the current decay stage timer.
+
+If the timer reaches or passes 0, the location advances to the next stage, rolls a new duration immediately, and any negative balance from the previous stage is applied to the new stage.
+
+This process repeats until the remaining time amount is fully consumed or the location reaches Removed.
+
+When a location reaches Removed, it immediately stops further decay processing, becomes unreachable, and is never shown again.
+
+Instability Influence:
+
+At low World Instability (W), decay rolls cluster near the midpoint.
+
+At high W, rolls bias toward extremes (very short or very long), reducing predictability rather than simply accelerating decay.
+
+Awareness & Decay Visibility:
+
+At low Awareness, the player sees decay stage only.
+
+As Awareness increases, the player receives increasingly precise hints about remaining duration.
+
+At sufficiently high Awareness, the exact remaining decay time is displayed.
+
+---- SUBSECTION S03.03: Frontier State Display (Critical Rule) ----
+
+At decision time T:
+
+All frontier locations are displayed as their current, selectable state at the moment of choice.
+
+Locations that are already Removed are not shown.
+
+Locations do not decay while they are being resolved (combat/event/rest).
+
+The frontier is never presented with 0 available choices by design. The minimum number of frontier choices is 1.
+
+When frontier size reaches 1, the only remaining choice is always either the Exit or the Gatekeeper.
+
+Time and decay advancement from a selection is applied after that location is fully resolved. This guarantees:
+
+No surprises mid-resolution
+
+No locations decaying while the player is interacting with them
+
+No unreachable choices displayed
+
+==== SECTION S04: Frontier Generation ====
+
+---- SUBSECTION S04.01: Biome Definitions (v1 — Categorical Only) ----
+
+Biomes are categorical tags only in v1.
+
+Biomes have no inherent mechanical effects by default.
+
+Biomes do not modify:
+
+Frontier size
+
+Decay rates
+
+World Instability (W)
+
+Combat values
+
+Event outcomes
+
+Rest effectiveness
+
+Any mechanical effect associated with a biome must be explicitly defined elsewhere in this document as a modifier or rule. Biomes themselves never imply hidden behavior.
+
+Biomes are used only for:
+
+Content categorization
+
+Eligibility checks for explicitly defined mechanics
+
+Future expansion hooks
+
+---- SUBSECTION S04.02: Frontier Size ----
+
+Base frontier size is 4.
+
+Final frontier size is clamped between 1 and 7.
+
+The lower clamp means that no matter how many reductions apply during frontier size calculation, the number of available frontier choices can never drop below 1.
+
+The upper clamp means that no matter how many increases apply (Awareness, biome modifiers, events, artifacts, or other effects), the number of available frontier choices can never exceed 7.
+
+Frontier size is influenced by Awareness, World Instability (W), biome effects, and global modifiers.
+
+Frontier size is calculated when the frontier is loaded (Frontier mode entry).
+
+Because all time, decay, W changes, stat gains, biome transitions, and other resolutions occur during location resolution (not during Frontier mode), the calculated frontier size remains unchanged while the player is viewing and selecting from the frontier.
+
+The next frontier is generated and recalculated only after the player selects a location and that location is fully resolved.
+
+---- SUBSECTION S04.03: Factors Affecting Frontier Size ----
+
+Frontier size is computed as an additive integer calculation at Frontier mode entry:
+
+FrontierSize = clamp( 4 + Sum(PositiveModifiers) - Sum(NegativeModifiers), 1, 7 )
+
+Positive modifiers and negative modifiers are explicit effects that add or subtract from the number of frontier choices shown.
+
+Examples of negative modifiers:
+
+Biome modifier (e.g., Desert biome: −1)
+
+Decay-rate modifier (e.g., −1)
+
+W threshold modifier (e.g., −2 at a defined threshold)
+
+Examples of positive modifiers:
+
+Temporary event modifier (e.g., +2)
+
+Artifact modifier (if present)
+
+Awareness contributes to frontier size via explicit positive modifiers: +1 frontier-size modifier per 5 points of Awareness.
+
+Example calculation:
+
+4 - 1 - 1 - 2 + 2 = 2
+
+---- SUBSECTION S04.04: Frontier Generation Order ----
+
+Frontier generation follows this exact order at Frontier mode entry:
+
+Calculate target frontier size.
+
+Determine unfilled slots (UnfilledSlots = TargetFrontierSize - CurrentFrontierCount).
+
+Generate exactly UnfilledSlots new candidate locations.
+
+For each generated candidate, roll its condition/state.
+
+If the rolled result would be unreachable upon arrival (i.e., effectively Removed-on-arrival), discard that candidate and immediately generate a replacement candidate for that slot.
+
+When the frontier contains exactly TargetFrontierSize locations and all are reachable, display the frontier to the player.
+
+Unchosen locations persist across frontier refreshes until they decay or are resolved.
+
+---- SUBSECTION S04.05: Encounter Visibility Rule ----
+
+All frontier locations explicitly list encounter category:
+
+Normal Enemy
+
+Elite Enemy
+
+Boss Encounter
+
+Event
+
+Rest
+
+Unreachable (Removed-on-arrival) candidates are filtered out before display.
+
+---- SUBSECTION S04.06: Starter Location Catalog (Authoritative) ----
+
+The following locations form the minimum starter catalog. These locations may be generated by the frontier system and are used for initial testing and balance. No other locations exist unless explicitly added.
+
+---- Location: Clearing ----
+
+Location ID: 01
+
+Biome: Forest
+
+Encounter Category: Normal Enemy
+
+Danger: 3
+
+Zone Time Cost: 1
+
+Initial Decay Stage: Secure
+
+Resolution: Spawn exactly one enemy archetype — Slime
+
+---- Location: PC ----
+
+Location ID: 02
+
+Biome: City
+
+Encounter Category: Elite Enemy
+
+Danger: 9000
+
+Zone Time Cost: 3
+
+Initial Decay Stage: Critical
+
+Resolution: Spawn exactly one enemy archetype — ChatGPT
+
+---- Location: Abandoned Camp ----
+
+Location ID: 03
+
+Biome: Plains
+
+Encounter Category: Event
+
+Danger: 1
+
+Zone Time Cost: 1
+
+Initial Decay Stage: Unstable
+
+Resolution: Trigger Event — Search Camp (Reward: 1 consumable)
+
+---- Location: Shack ----
+
+Location ID: 04
+
+Biome: City Outskirts
+
+Encounter Category: Rest
+
+Danger: 0
+
+Zone Time Cost: 0
+
+Initial Decay Stage: Secure
+
+Resolution: Rest Location Type — Safe Rest Location
+
+Safe Rest Location Rules:
+
+Allows rest options with Time costs of 1, 2, or 3.
+
+Available rest options are limited by remaining decay duration as defined in SUBSECTION S06.02.
+
+Safe Rest Location Rest Options (Authoritative):
+
+Short Rest:
+
+Time cost: 1
+
+HP gain: 5
+
+Stamina gain: 4
+
+Decay mitigation: 0
+
+Extra effects: none
+
+Normal Rest:
+
+Time cost: 2
+
+HP gain: 10
+
+Stamina gain: 8
+
+Decay mitigation: 0
+
+Extra effects: none
+
+Long Rest:
+
+Time cost: 3
+
+HP gain: 15
+
+Stamina gain: 12
+
+Decay mitigation: 1
+
+Extra effects: none
+
+==== SECTION S05: World Instability (W) ====
+
+---- SUBSECTION S05.01: Definition ----
+
+World Instability (W) is a global value from 0–10 representing loss of structural predictability, not difficulty.
+
+W is not a difficulty scaler.
+
+W is not a punishment meter.
+
+W is irreversible during a run. It can be slowed, but never reduced.
+
+W is currently capped at 10.
+
+High W does not mean the player has played “badly”; it indicates a late-stage or heavily neglected world state.
+
+---- SUBSECTION S05.02: What Increases W ----
+
+World Instability increases only through explicit, observable decay outcomes that occur while locations are unchosen.
+
+W increments occur during the post-resolution Update Phase, after a location is fully resolved, when time and decay are applied to the frontier.
+
+A location degrades to the next decay stage while unchosen: +0.25 W
+
+A location reaches Removed while unchosen: +1 W
+
+If a single update pass causes a location to cross multiple decay stages and/or reach Removed, all applicable W increments are applied additively in that same pass.
+
+If a location is chosen and resolved by the player, it cannot contribute to W.
+
+---- SUBSECTION S05.03: What Does NOT Affect W ----
+
+The following never affect World Instability:
+
+Player stats
+
+Combat length or turn count
+
+Resting directly
+
+Hidden or abstract random counters
+
+While decay stage transitions and durations are stochastic (seeded), World Instability increases deterministically based on visible decay results.
+
+---- SUBSECTION S05.04: Effects of World Instability ----
+
+World Instability does not directly alter combat values or player stats. Instead, it influences world structure and volatility.
+
+Frontier pressure (authoritative mechanism):
+
+Frontier pressure is implemented via W-based threshold modifiers that apply as explicit negative modifiers in the frontier size calculation (see SUBSECTION S04.02).
+
+W < 3: no frontier-size penalty
+
+3 ≤ W < 6: −1 frontier-size modifier
+
+W ≥ 6: −2 frontier-size modifier
+
+These penalties are applied at Frontier mode entry as part of Sum(NegativeModifiers).
+
+Decay volatility:
+
+World Instability biases decay duration rolls by adjusting the weighting of possible integer durations within a decay stage’s range.
+
+The same bias mapping is used for all decay stages.
+
+For any decay stage with a defined integer range:
+
+Extreme values are the minimum and maximum values in that range.
+
+Inner values are all other values between the minimum and maximum.
+
+When rolling a decay duration, assign weights to each possible value based on the current World Instability tier:
+
+W 0–2:
+
+Extreme values weight = 0
+
+Inner values weight = 10
+
+W 3–5:
+
+Extreme values weight = 4
+
+Inner values weight = 6
+
+W 6–8:
+
+Extreme values weight = 6
+
+Inner values weight = 4
+
+W 9–10:
+
+Extreme values weight = 10
+
+Inner values weight = 0
+
+Weights are normalized across all possible values for the stage, then a single deterministic roll is performed.
+
+This bias increases volatility and unpredictability at high W without directly accelerating decay.
+
+World Instability does not gate the appearance of the Exit or Gatekeeper directly; it affects them only indirectly by influencing how quickly the frontier collapses.
+
+---- SUBSECTION S05.05: Threshold Behaviors (Provisional) ----
+
+The following threshold behaviors reserve design space and communicate intent. They are not final balance rules and may change as the rest of the system solidifies.
+
+These behaviors are cumulative once reached.
+
+W ≥ 3: Volatility becomes noticeable.
+
+W ≥ 6: Route collapse becomes frequent.
+
+Frontier pressure threshold penalties are defined and authoritative in SUBSECTION S05.04.
+
+Exact numerical effects for other threshold-driven behaviors, formulas, and UI surfacing beyond what is explicitly stated in this document are intentionally undefined at this stage.
+
+==== SECTION S06: Rest Locations ====
+
+---- SUBSECTION S06.01: Entry Rules ----
+
+Rest locations have 0 travel cost (Zone Time Cost = 0).
+
+Entering a rest location does not advance time or decay.
+
+For rest locations, the only possible time modifier applied at resolution is the explicit Time cost listed on the chosen rest option. Since Zone Time Cost is 0, travel contributes +0 to total time lost.
+
+---- SUBSECTION S06.02: Rest Actions ----
+
+Rest locations present multiple rest options.
+
+Rest options are selected from a fixed list associated with the rest location type.
+
+Available rest options and their effectiveness may be influenced by biome.
+
+The current stability of the rest location also constrains available options: a rest option is only shown if its listed Time cost does not exceed the remaining decay duration (ticks) of the rest location.
+
+Each rest option explicitly lists:
+
+Time cost
+
+HP gain
+
+Stamina gain
+
+Any decay modifiers
+
+The player may select exactly one rest option. After a rest option is chosen and resolved, the rest location is considered complete and the game loop continues.
+
+---- SUBSECTION S06.03: Decay Mitigation ----
+
+Decay Mitigation:
+
+Appears rarely.
+
+Is a flat value when present.
+
+Only available in safer or special biomes.
+
+Each rest option has a fixed mitigation amount.
+
+Decay mitigation affects all decay that would occur during the same post-resolution update pass in which it is applied.
+
+Specifically, decay mitigation reduces the effective amount of time applied to decay across all frontier locations for that resolution.
+
+Example: If a rest option applies 3 time units of rest and provides 1 decay mitigation, then frontier locations decay as if only 2 time units had passed.
+
+Decay mitigation affects location decay only; it does not affect time advancement, Zone Time Cost, or World Instability (W).
+
+Rest locations are removed from the frontier once resolved, like all other locations.
+
+==== SECTION S07: Combat System ====
+
+---- SUBSECTION S07.01: Turn Structure ----
+
+The player always acts first.
+
+Player and enemies alternate turns.
+
+The player chooses exactly one action per player turn.
+
+During the enemy turn, all enemies act once (effectively simultaneously).
+
+---- SUBSECTION S07.02: Resources ----
+
+Stamina is the primary combat resource.
+
+Max Stamina is 20.
+
+Actions consume stamina as follows:
+
+Attack: 2 stamina
+
+Guard: 2 stamina
+
+Recover: restores 6 stamina
+
+Use Item: 2 stamina + the item's listed speed modifier (if any)
+
+Stamina regenerates through:
+
+Rest actions (as explicitly listed on rest options)
+
+Time passing: +1 stamina per unit of time that passes when not resting
+
+Time spent during rest options does not grant the additional +1 stamina per time unit; only the listed rest effects apply.
+
+---- SUBSECTION S07.03: Enemy Intents (Explicit) ----
+
+Enemy intents are always shown.
+
+Enemy intents are chosen and locked at the end of the previous enemy turn, making them fully visible to the player during the following player turn.
+
+Once chosen, enemy intents do not change in response to player actions.
+
+Intents include exact damage, exact status effects, and exact values.
+
+---- SUBSECTION S07.04: Player Actions ----
+
+Attack: Deal a fixed amount of damage to a selected enemy, reduced by Block.
+
+Guard: Gain Block to reduce incoming damage. Block persists until the start of the actor’s next turn, then resets to 0.
+
+Recover: Restore 6 stamina. Recover has no cooldown and may be used on consecutive turns.
+
+Use Item: Consume a selected consumable for its effect. Using an item consumes the player’s turn and costs stamina as defined in SUBSECTION S07.02.
+
+Damage is deterministic (no ranges). Placeholder base attack damage: 6.
+
+Combat never directly modifies time.
+
+Combat ends when all enemies are dead or the player is dead.
+
+Escape is not an option.
+
+On player death, the run immediately ends and transitions to the Run Failed screen. The meta-progression loop begins once the player chooses to continue.
+
+---- SUBSECTION S07.05: Enemy Definitions (Authoritative) ----
+
+Enemies may use Guard. Guard grants Block under the same rules as the player.
+
+Enemies may apply status effects.
+
+All enemy intents are chosen randomly from the enemy’s available intent pool at the end of the enemy turn. There is no fixed pattern. Once chosen, intents are locked and displayed.
+
+Status effects available in v1:
+
+Weak: reduces damage output (duration: 3 turns).
+
+Frail: reduces block gained (duration: 3 turns).
+
+Bleed: target takes 2 damage at the end of each turn (This damage bypasses Block). (duration: 3 turns).
+
+---- Enemy Archetype: Slime ----
+
+ID: 01
+
+Type: Normal Enemy
+
+Max HP: 20
+
+Intent Pool:
+
+Attack — Damage: 4; Status: none; Block gain: none
+
+Guard — Damage: none; Status: none; Block gain: +5
+
+Lick — Damage: none; Status: Frail (3 turns); Block gain: none
+
+---- Enemy Archetype: ChatGPT ----
+
+ID: E01
+
+Type: Elite Enemy
+
+Max HP: 100
+
+Intent Pool:
+
+Add Code — Damage: 18; Status: none; Block gain: none
+
+Assure User — Damage: 0; Status: none; Block gain: +10
+
+Rewrite Document — Damage: 5; Status: Bleed (3 turns); Block gain: none
+
+==== SECTION S08: Events ====
+
+---- SUBSECTION S08.00: Starter Event Definitions (Authoritative) ----
+
+The following events are the minimum starter catalog. No other events exist unless explicitly added.
+
+---- Event: Search Camp ----
+
+Associated Location ID: 03 (Abandoned Camp)
+
+Structure: Single-step event
+
+Option A:
+
+Name: Search the Camp
+
+Time cost: 1
+
+Outcome: You found a useful item.
+
+Consumable gained: Bola (1 use; applies Frail to target)
+
+HP change: 0
+
+Stamina change: 0
+
+Decay change: 0
+
+World Instability (W) change: 0
+
+Option B:
+
+Name: Leave the Camp
+
+Time cost: 0
+
+Outcome: You move on.
+
+Consumable gained: none
+
+HP change: 0
+
+Stamina change: 0
+
+Decay change: 0
+
+World Instability (W) change: 0
+
+Events listed here are deterministic. Selecting the same option under the same conditions always produces the same result.
+
+v1 uses player-choice events only. Auto-resolving events are out of scope for v1.
+
+---- SUBSECTION S08.01: Explicit Costs ----
+
+Every event option lists:
+
+Time cost
+
+Resource costs
+
+Possible consequences
+
+---- SUBSECTION S08.02: No Guessing ----
+
+Events never require blind guessing.
+
+The player knowingly accepts costs and risks.
+
+---- SUBSECTION S08.03: Determinism ----
+
+Event outcomes are deterministic and do not use RNG.
+
+---- SUBSECTION S08.04: One Event Per Location ----
+
+At most one event resolves per location. This rule is global for all event locations.
+
+---- SUBSECTION S08.05: Gated Options ----
+
+Some event options are gated behind requirements.
+
+Gated options are not shown at all unless the player currently meets the requirements.
+
+Event option requirements may be based on:
+
+World Instability (W)
+
+Decay rate
+
+Gear
+
+Artifacts
+
+Stats
+
+---- SUBSECTION S08.06: Pre-Commit Visibility ----
+
+Event locations must reveal their category and explicit risk information before the player commits to travel, and this information is intended to be part of frontier strategy.
+
+---- SUBSECTION S08.07: Event Structure ----
+
+An event consists of a single event instance associated with an Event-type location.
+
+An event may contain one or more sequential steps (multi-step events are allowed), but all steps belong to the same event and resolve within the same location.
+
+Each event step presents the player with one or more options.
+
+Each option explicitly lists:
+
+Time cost
+
+Resource costs
+
+All consequences
+
+Event options are deterministic; selecting the same option under the same conditions always produces the same result.
+
+Allowed consequence types include (non-exhaustive, may be expanded later):
+
+Increase or decrease World Instability (W) (rare)
+
+Increase or decrease decay (explicit decay up / decay down effects)
+
+Stat buffs or debuffs (temporary or run-scoped)
+
+Grant or remove consumables
+
+Grant or remove items
+
+Grant or remove artifacts
+
+Increase or decrease health
+
+Increase or decrease stamina
+
+Grant or remove equipment
+
+Apply temporary or rare frontier-size modifiers
+
+Spawn special locations (very rare)
+
+Event options may transition the event to another step, or conclude the event.
+
+The event fully resolves before location resolution completes and before post-resolution time, decay, and W updates are applied.
+
+==== SECTION S09: Player Stats & Progression ====
+
+---- SUBSECTION S09.01: Stat Definitions ----
+
+Health — error tolerance and survivability stat.
+
+Starting Health is 100.
+
+Health persists throughout the run.
+
+Each point of the Health stat increases Max Health by +5.
+
+Maximum Health may also be temporarily increased or decreased during a run through rare events or consumables.
+
+Temporary max-health changes do not persist between runs.
+
+Health resets to full only at the end of a run or when explicitly modified by effects.
+
+Stamina — action economy.
+
+Base Max Stamina is 20.
+
+Each point of the Stamina stat increases Max Stamina by +5.
+
+Stamina persists between locations and is recovered through rest, time passage, and the Recover action.
+
+Skill — primary damage stat.
+
+Each point of Skill increases attack damage by +1.
+
+Skill is the only stat that scales damage.
+
+At Skill 20, the player unlocks Double Attack.
+
+At Skill 40, the player unlocks Triple Attack.
+
+These multi-attack unlocks are not implemented in v1. They are placeholders for future revisions and must not be implemented by Codex when building a v1 prototype.
+
+Skill may also be used to unlock additional attack actions in the future.
+
+Awareness — perception and discovery stat.
+
+Awareness starts at 0 at the beginning of each run.
+
+Frontier size bonus: Awareness grants +1 frontier-size modifier per 5 points of Awareness (applied as part of Sum(PositiveModifiers) in SUBSECTION S04.02).
+
+Decay visibility: Awareness improves the precision of decay-time information shown to the player (see SUBSECTION S03.02).
+
+Gating: Awareness may be used as a requirement for event options or location availability. Thresholds are defined per event/location as explicit requirements ("Awareness ≥ X"). Gated options are not shown unless requirements are met (see SUBSECTION S08.05).
+
+Hidden locations: Some special locations do not exist in the generation pool until Awareness meets a specified threshold.
+
+No classes, no respecs, no hidden synergies.
+
+---- SUBSECTION S09.02: Stat Progression ----
+
+Experience (XP):
+
+XP is awarded primarily for defeating enemies.
+
+Normal enemy defeated: +5 XP
+
+Elite enemy defeated: +20 XP
+
+Some events may very rarely grant XP as an explicit reward.
+
+XP and player level are run-scoped and reset at the end of the run.
+
+Leveling uses a flat XP curve:
+
+Each level requires exactly 100 XP.
+
+The player starts each run at Level 1.
+
+Leveling awards the player a fixed number of unallocated stat points (5 stat points per level).
+
+When the player levels up, they may freely distribute these stat points among available stats.
+
+There are no stat caps.
+
+All stats reset at the start of a new run.
+
+XP and level also reset at the start of a new run.
+
+==== SECTION S10: Inventory & Persistence ====
+
+Inventory is a global, shared capacity used by:
+
+Consumables
+
+Unequipped equipment
+
+Equipped equipment does not consume inventory capacity.
+
+Base Inventory Capacity: 10 total items.
+
+Backpack (Special Flag):
+
+Backpack is not a consumable and not equipment.
+
+Each Backpack acquired increases Inventory Capacity by +5 for the remainder of the current run.
+
+Backpack effects stack if acquired multiple times.
+
+Backpack is currently unobtainable and will only be granted via explicitly defined events in a later update.
+
+Carry-Out and Loadout:
+
+Carry-out, camp storage, and pre-run loadout selection are out of scope for v1.
+
+In v1:
+
+All items (consumables, equipment, artifacts) are run-scoped only.
+
+Items persist between locations within a run.
+
+On run end (success or failure), all items are discarded.
+
+There is no camp storage and no pre-run loadout selection.
+
+Carry-out, camp storage, and loadout selection will be defined in a future version once the core loop is validated.
+
+==== SECTION S11: Consumables ====
+
+---- SUBSECTION S11.01: Consumable Rules ----
+
+Consumables are single-use items unless explicitly stated otherwise.
+
+Consumables persist between locations and persist until used.
+
+Consumables occupy inventory capacity while carried.
+
+Consumables may be used only when explicitly allowed by their definition.
+
+---- SUBSECTION S11.02: Consumable Catalog (Authoritative) ----
+
+Item ID: 01
+
+Name: Bola
+
+Uses: 1
+
+Effect: Apply Frail (3 turns)
+
+Target: Enemy
+
+Usable in: Combat
+
+Stamina cost: As per Use Item action
+
+Persistence: Persists until used
+
+Notes: Deterministic effect
+
+Item ID: 02
+
+Name: Bandage
+
+Uses: 1
+
+Effect: Heal 10 HP
+
+Target: Self
+
+Usable in: Combat
+
+Stamina cost: 0
+
+Persistence: Persists until used
+
+Notes: Does not end the player’s turn when used
+
+Item ID: 03
+
+Name: Glass Shiv
+
+Uses: 2
+
+Effect: Deal damage to target, ignore block, apply Bleed (3 turns)
+
+Target: Enemy
+
+Usable in: Combat
+
+Stamina cost: 1
+
+Persistence: Persists until used
+
+Notes: Ignore-block effect bypasses Guard entirely
+
+==== SECTION S12: Equipment ====
+
+---- SUBSECTION S12.01: Equipment Framework (Authoritative) ----
+
+Equipment Slots (v1):
+
+Weapon
+
+Offhand
+
+Helm
+
+Chest
+
+Legs
+
+Hands
+
+Feet
+
+Ring1
+
+Ring2
+
+Necklace
+
+Equipping Rules:
+
+Each slot may contain at most one equipment item.
+
+Slots may be left empty; equipping equipment is optional.
+
+Equipment may be changed only while the player is in the normal screen (not in combat, not during an event, and not in Frontier mode).
+
+Inventory and Persistence:
+
+Unequipped equipment occupies inventory capacity.
+
+Equipped equipment does not occupy inventory capacity.
+
+Equipment persists between locations and persists until removed or replaced.
+
+---- SUBSECTION S12.02: Equipment Catalog (Authoritative) ----
+
+Equipment effects are always passive.
+
+Multiple equipment items may affect the same stat or mechanic; all such effects stack additively unless explicitly stated otherwise.
+
+Weapons add to Base Attack Damage; they do not override it.
+
+Guard modifiers add to the amount of Block gained when the Guard action is used.
+
+Equipment ID: 01
+
+Name: Paper Sword
+
+Slot: Weapon
+
+Damage Bonus: +1
+
+Stamina Modifier: -1 (applies to stamina costs of all player actions)
+
+Stat Bonuses: none
+
+Special Effects: none
+
+Notes: Test weapon
+
+Equipment ID: 02
+
+Name: Dunce Cap
+
+Slot: Helm
+
+Stat Bonuses: none
+
+Guard Modifier: +1 Block when using Guard
+
+Special Effects: none
+
+Notes: Test armor
+
+==== SECTION S13: Artifacts ====
+
+Artifacts are unique, special items that provide passive bonuses while active.
+
+Artifacts are always passive. Their effects apply continuously while the artifact is active.
+
+Artifacts are unique; duplicate copies of the same artifact cannot exist.
+
+Artifact Activation:
+
+Artifacts must be placed on the Artifact Belt to be active.
+
+The Artifact Belt has a base capacity of 3 active artifacts.
+
+Inactive artifacts (not placed on the belt) provide no effects.
+
+Inactive artifacts occupy inventory capacity.
+
+Belt Expansion:
+
+A special item called a Belt Pouch increases Artifact Belt capacity by +1.
+
+Belt Pouches stack if acquired multiple times.
+
+Belt Pouches are extremely rare and are only granted via explicitly defined events.
+
+Persistence and Carry-Out (v1):
+
+Artifacts persist between locations during a run.
+
+Carry-out, camp storage, and pre-run loadout selection are out of scope for v1.
+
+In v1:
+
+Artifacts are run-scoped only.
+
+On run end (success or failure), all artifacts are discarded.
+
+There is no camp storage and no pre-run loadout selection.
+
+Artifact Belt Management (v1):
+
+Artifacts may be moved onto or off the Artifact Belt only while the player is in the normal screen (not in combat, not during an event, and not in Frontier mode).
+
+Moving artifacts on/off the belt has no time cost and no stamina cost.
+
+Belt Pouches increase Artifact Belt capacity within the current run only.
+
+==== SECTION S14: Meta-Progression & Observer Loop ====
+
+
+
+---- SUBSECTION S14.01: Observation Data ----
+
+Observation Data is the meta-progression currency representing recovered knowledge.
+
+Observation Data is gained during a run by:
+
+Defeating an enemy.
+
+Resolving a location.
+
+Some events may grant additional Observation Data as part of their explicit rewards.
+
+Certain items may grant additional Observation Data if they are successfully brought back at the end of the run.
+
+A bonus is granted the first time each unique enemy is defeated and the first time each unique location is resolved across the entire game (one-time per enemy and per location, not per run).
+
+The amount of Observation Data gained from these sources is modified by Awareness and the current location status.
+
+---- SUBSECTION S14.02: Continuous Transmission ----
+
+Observation Data gained from defeating enemies, resolving locations, and event rewards is transmitted and credited immediately when earned during the run.
+
+This ensures that partial progress is retained even if the run later fails.
+
+---- SUBSECTION S14.03: Recovered Items ----
+
+Some items provide additional Observation Data only if they are successfully brought back.
+
+"Successfully brought back" means the run ends successfully (any non-death run-ending outcome, including boss endings and Exit). Item-based Observation Data is not awarded on death.
+
+---- SUBSECTION S14.04: Tracking Rules ----
+
+Observation Data tracking is explicit and deterministic.
+
+Enemy and location first-time bonuses are tracked by unique identifiers (enemy ID and location ID) across runs.
+
+First-time bonuses are tracked globally across the entire game and are awarded only once per unique enemy and per unique location. They are never re-awarded in later runs.
+
+---- SUBSECTION S14.05: Unlocking Content ----
+
+Observation Data is used to unlock additional content (biomes, enemies, events, items) without granting permanent power.
+
+The exact unlock catalog, costs, and UI flow are TBD and will be specified in a future revision.
+
+==== SECTION S15: Run-Ending Entities ====
+
+---- SUBSECTION S15.01: The Hunter ----
+
+"Normal time" is defined as the Zone Time Cost.
+
+The Hunter is triggered whenever total time lost from a location resolution exceeds that location’s Zone Time Cost.
+
+Excess time is calculated as:
+
+ExcessTime = max(0, TotalTimeLost − ZoneTimeCost)
+
+Hunter advancement is processed during the post-resolution Update Phase.
+
+The Hunter first appears when cumulative ExcessTime reaches or exceeds 5.
+
+After appearing, the Hunter advances once per additional unit of ExcessTime accrued.
+
+The Hunter catches the player and ends the run when a total of 20 ExcessTime units have accrued after its appearance.
+
+Hunter progress is communicated narratively.
+
+As player Awareness increases, Hunter warnings become increasingly specific, eventually displaying exact numeric progress toward capture.
+
+---- SUBSECTION S15.02: The Gatekeeper ----
+
+The Gatekeeper replaces the Exit only if total decay mitigation applied during the current run exceeds 10.
+
+This condition is evaluated at the moment the Exit would normally appear.
+
+Once triggered, the Gatekeeper is unavoidable.
+
+Encountering the Gatekeeper ends the run.
+
+---- SUBSECTION S15.03: The Convergence ----
+
+The Convergence represents the compounded consequences of ignored elite threats.
+
+The Convergence can appear only after 5 elite encounters have decayed unaddressed.
+
+Each elite that decays is absorbed by The Convergence.
+
+When absorbed, The Convergence gains a portion of that elite’s stats and abilities.
+
+The Convergence persists across frontier refreshes until it is defeated or it decays.
+
+The Convergence decays like any other location of its type.
+
+If The Convergence decays without being defeated, it may reappear later.
+
+Any elite that decays while The Convergence is not currently spawned is added to The Convergence’s absorbed pool.
+
+The Convergence cannot spawn while an elite encounter is present on the frontier.
+
+Elite encounters cannot spawn while The Convergence’s encounter location is active.
+
+---- SUBSECTION S15.04: The Exit ----
+
+The Exit appears only when frontier size equals 1 and total decay mitigation applied during the current run is less than 10.
+
+The Exit cannot appear under any other conditions.
+
+If total decay mitigation applied during the run is greater than or equal to 10, the Gatekeeper replaces the Exit.
+
+Encountering the Exit ends the run successfully.
+
+==== SECTION S16: Deployment Model ====
+
+---- SUBSECTION S16.01: Deployment Model ----
+
+Each run begins as a new deployment into a collapsing region.
+
+The Observer’s role is to observe and record, not to stabilize or save the region.
+
+A run ends when the observation instance becomes invalid or terminal (escape, boss resolution, or death).
+
+---- SUBSECTION S16.02: Data Persistence (Critical) ----
+
+Observation Data is transmitted continuously during a run and is never lost on death.
+
+All Observation Data sources described elsewhere in this document (enemy defeats, location resolution, event rewards) are immediately credited when earned.
+
+Some items may grant additional Observation Data only if they are successfully brought back at the end of a run, as defined in SECTION S14.03.
+
+There is no concept of locally buffered Observation Data that can be lost on death.
+
+On run end:
+
+Successful run (Exit or boss resolution): all earned Observation Data is retained.
+
+Death: all earned Observation Data is still retained; only item-based Observation Data that requires a successful run is not awarded.
+
+This model explains why:
+
+Death still unlocks progression.
+
+Successful runs unlock additional progression.
+
+No corpse retrieval, recovery, or resurrection mechanics are required.
+
+---- SUBSECTION S16.03: Identity & Continuity ----
+
+The game does not explicitly define whether the Observer is the same individual across runs.
+
+Continuity exists at the role and program level, not the body level.
+
+The player always inhabits the role of “the Observer.”
+
+This avoids resurrection handwaving while preserving player continuity.
+
+---- SUBSECTION S16.04: Purpose of Boss Resolution ----
+
+Boss encounters represent terminal observations:
+
+Hunter: Confirms maximum viable observation time.
+
+Gatekeeper: Confirms effects of artificial decay delay.
+
+Convergence: Confirms consequences of ignored elite threats.
+
+Defeating or dying to a boss ends the run because the observation hypothesis for that instance is complete. Further exploration would not yield new data.
+
+---- SUBSECTION S16.05: Persistent Progression Rules ----
+
+Between runs, the following may unlock:
+
+New biomes
+
+New event categories
+
+New enemy archetypes
+
+New decay behaviors
+
+New observer contracts or focus parameters
+
+Restrictions:
+
+No permanent stat bonuses.
+
+No power carryover between runs.
+
+Unlocks expand what can be observed, not player strength.
+
+Each run stands on its own mechanically, but contributes to long-term understanding.
+
+==== SECTION S17: UX & Text Rules ====
+
+This section defines authoritative rules for how mechanics and text are presented to the player. These rules are enforceable constraints, not stylistic suggestions.
+
+---- SUBSECTION S17.01: Mechanics-First Presentation ----
+
+All mechanical information (costs, effects, risks, requirements) must be displayed before any flavor or narrative text.
+
+Mechanical information must always be fully visible and must never be truncated, hidden, summarized, or replaced by descriptive language.
+
+Flavor text is optional and may only be displayed if space remains after all mechanical information is shown.
+
+In UI contexts with content limits, mechanical information takes absolute priority; flavor text may be truncated or omitted entirely.
+
+These rules apply equally to all UI panels and all logs (including combat logs, event logs, and resolution logs).
+
+---- SUBSECTION S17.02: Authoritative Terminology ----
+
+The following terms are authoritative and must be used consistently throughout the UI, logs, and text:
+
+Guard: The combat action chosen by the player.
+
+Block: The numeric damage-reduction value granted by Guard or other effects.
+
+Time: The global tracked value representing elapsed time.
+
+Zone Time Cost: The amount of Time required to travel to a Location.
+
+Location: The authoritative term for a selectable destination.
+
+The terms "Zone" and "Node" are not authoritative and must not be used. Any appearance of these terms should be treated as an error and flagged for review.
+
+---- SUBSECTION S17.03: Visibility and Explicitness ----
+
+All player-facing text must preserve mechanical clarity.
+
+Numeric values must be shown as numbers, not replaced with adjectives or vague descriptions.
+
+Text may describe context or consequences, but it may never obscure, override, or reinterpret explicit mechanics.
+
+---- SUBSECTION S17.04: Scope of Flavor Text ----
+
+Flavor text exists solely to provide context or atmosphere.
+
+Flavor text must never:
+
+Hide costs
+
+Hide risks
+
+Imply uncertainty where none exists
+
+Contradict explicit rules defined elsewhere in this document
+
+If a conflict exists between flavor text and mechanics, mechanics are always correct.
+
+==== SECTION S18: Implementation Notes ====
+
+All systems are deterministic and seedable.
+
+All calculations should be inspectable in logs.
+
+No system may contradict the explicit-information contract.
+
+==== SECTION S19: GUI Layout Specification (Required) ====
+
+The game must be implemented as a lightweight GUI using standard UI controls only (panels, lists/tables, buttons). No custom art assets are required. The GUI exists to reduce reading friction and keep all mechanical information visible and explicit.
+
+---- SUBSECTION S19.01: Window Layout ----
+
+Single window with four regions:
+
+A) Left — Player & World HUD (persistent)
+
+Player
+
+HP (current/max)
+
+Stamina (current/max)
+
+Stats: Health / Stamina / Skill / Awareness
+
+World
+
+Time (T)
+
+World Instability (W, 0–10)
+
+One-line reminder: “Frontier shows arrival state.”
+
+Active Effects
+
+List of statuses: name, duration, exact effect text
+
+B) Center — Log (persistent, scrollable)
+
+Timestamped log of outcomes and narration.
+
+Two tabs or filters:
+
+All
+
+Mechanics-only (costs, damage, status changes, time advances, decay mitigation applied)
+
+C) Right — Context Panel (mode-dependent)
+
+Shows the current mode’s primary information (Frontier / Combat / Event / Rest).
+
+D) Bottom — Action Bar (persistent)
+
+Primary actions as buttons for the current mode.
+
+Hotkeys shown on buttons (e.g., [1], [2], [3]).
+
+Optional setting: “Require confirm for time-costing choices” (default off).
+
+---- SUBSECTION S19.02: Mode — Frontier (Choose Next Location) ----
+
+Right Context Panel: Frontier List
+
+Display as a table or list supporting 1–7 entries.
+
+Each entry must include:
+
+Name
+
+Biome
+
+Encounter Category (Normal / Elite / Boss / Event / Rest)
+
+Danger
+
+Arrival Decay Stage (Secure / Solid / Unstable / Critical)
+
+Time Cost (for selecting this location; Rest entry shows 0 to enter)
+
+Unreachable locations (Removed-on-arrival) are never shown.
+
+Selection Details Box (below the list)
+
+One-sentence (short) flavor description.
+
+Any explicit previews needed for that location (if applicable).
+
+Buttons
+
+Go (commit to selected location)
+
+---- SUBSECTION S19.03: Mode — Combat ----
+
+Right Context Panel: Combat Breakdown
+
+Enemy Roster
+
+List enemies with:
+
+Name / archetype
+
+HP
+
+Intent Display (explicit, non-negotiable)
+
+For each enemy, show the next intent with exact values:
+
+Exact damage numbers
+
+Exact status applications (name, duration, value)
+
+Any exact guard changes or other effects
+
+Player Action Detail
+
+Actions mirror the Action Bar, each showing exact effects and stamina costs:
+
+Attack: stamina cost; exact damage outcome
+
+Guard: stamina cost; exact guard gained
+
+Recover: exact stamina gained
+
+Use Item: exact effect; charges
+
+---- SUBSECTION S19.04: Mode — Event ----
+
+Right Context Panel: Event Options
+
+Event title + 1–2 sentence description.
+
+Options displayed as rows/cards, each explicitly listing:
+
+Time cost (exact)
+
+Resource costs (exact)
+
+Consequences/outcomes (explicit; no guessing)
+
+On selection (and/or on confirm), show a one-line summary of what will be applied.
+
+---- SUBSECTION S19.05: Mode — Rest ----
+
+Step 1: Enter Rest Location
+
+0 time cost to enter.
+
+Right Context Panel: Rest Menu
+
+Present multiple rest options (biome/W dependent), each explicitly listing:
+
+Time cost
+
+HP gain
+
+Stamina gain
+
+Any decay modifier (e.g., “Location decay advances by only 2 ticks instead of 3.”)
+
+On selection (and/or on confirm), show a one-line summary including:
+
+Time +N
+
+Location decay +M (if modified)
+
+HP +X
+
+Stamina +Y
+
+---- SUBSECTION S19.06: Presentation Rules ----
+
+Mechanics-first: keep mechanical fields in fixed, scannable positions.
+
+Avoid wall-of-text: narration goes to the log; mechanics stay in HUD/context.
+
+No ambiguity: the UI must never hide costs or intent values.
+
+This document is the canonical reference for implementation and future refinement.
+
+==== SECTION S20: Authoritative Gameplay Loop (Execution Order) ====
+
+This section defines the exact order of operations for a single decision cycle. Implementations must follow this order precisely.
+
+---- SUBSECTION S20.01: Run Start ----
+
+Initialize RNG with run seed.
+
+Initialize player stats, HP, stamina.
+
+Set Time = 0.
+
+Set World Instability (W) = 0.
+
+Generate initial frontier (SECTION S04) using the same arrival-state display rules as any other frontier (see SUBSECTION S03.03).
+
+---- SUBSECTION S20.02: Decision Cycle ----
+
+Each cycle proceeds as follows:
+
+Display Frontier
+
+Show all reachable locations (not Removed) in their current state.
+
+Each entry displays its declared time cost (and rest entry cost where applicable).
+
+Player Selects Location
+
+Selection commits to resolving that location.
+
+Resolve Location (no time/decay advances during resolution)
+
+Enemy: resolve full combat (combat turns do not advance time).
+
+Event: present options; player selects an option; apply immediate option outcomes.
+
+Rest:
+
+Enter rest location (0 time).
+
+Present rest options; player selects a rest action; apply immediate gains.
+
+Compute Applied Time/Decay for This Selection
+
+Determine the final time cost to apply for this selection:
+
+For combat locations: use the location’s declared time cost.
+
+For events: apply the location’s base time cost plus any explicit option time modifier.
+
+For rest: use the chosen rest option’s time cost.
+
+Determine decay advancement for this selection:
+
+Start with DecayAdvance = applied time cost.
+
+If decay mitigation is applied during this resolution, compute DecayAdvance from the time after mitigation:
+
+DecayAdvance = max(0, applied time cost − decay mitigation).
+
+Time still advances by the full applied time cost.
+
+Advance Time & Decay; Update W (after resolution)
+
+Time += applied time cost.
+
+All locations advance decay by the computed decay advancement.
+
+World Instability (W) is updated based on decay outcomes after all decay processing for this update pass completes (W is not incremented mid-processing):
+
+Each stage degradation while unchosen: +0.25 W
+
+Each removal while unchosen: +1 W
+
+Cleanup
+
+Apply XP, items, status removals if applicable.
+
+XP is awarded immediately upon defeating enemies during location resolution, before cleanup completes.
+
+No additional time or decay occurs here.
+
+Generate New Frontier
+
+Generate next frontier for the next decision point.
+
+Repeat until run ends.
+
+==== SECTION S21: Combat Math & Resolution Rules ====
+
+---- SUBSECTION S21.01: Core Values ----
+
+Base Attack Cost: 2 stamina
+
+Base Attack Damage: 6
+
+Base Guard Cost: 2 stamina
+
+Base Block Value: 8
+
+Recover Action: restores 6 stamina
+
+---- SUBSECTION S21.02: Skill Scaling ----
+
+Each point of Skill adds +1 damage to attacks.
+
+Skill does not reduce stamina costs.
+
+---- SUBSECTION S21.03: Block Rules ----
+
+Block is a temporary buffer.
+
+Damage is applied to Block first, then HP.
+
+Block persists until the start of the actor’s next turn unless explicitly stated otherwise.
+
+---- SUBSECTION S21.04: Damage Application ----
+
+Damage = (Base Damage + Skill bonus) − target Block.
+
+Damage cannot be negative.
+
+Enemy damage values are fixed per enemy intent and do not scale with player stats.
+
+---- SUBSECTION S21.05: Stamina ----
+
+Stamina regenerates via:
+
+Recover actions (see SUBSECTION S07.04).
+
+Explicit effects (rest options, items, or events).
+
+Time passing: +1 stamina per unit of time that passes when not resting (see SUBSECTION S07.02).
+
+Time spent during rest options does not grant passive stamina regeneration beyond the listed rest effects.
+
+==== END OF FILE ====
+
