@@ -322,9 +322,8 @@ def build_frontier_state(
         extra_negative=extra_negative,
     )
     target_size = size.clamped()
-    working_rng = random.Random((rng or random).random())
     if len(sorted_exits) > target_size:
-        working_rng.shuffle(sorted_exits)
+        rng.shuffle(sorted_exits)
     chosen_exits = sorted_exits[:target_size]
 
     options = [
