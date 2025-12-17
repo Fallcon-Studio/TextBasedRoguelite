@@ -10,7 +10,16 @@ from .entities import Combatant, Stats, describe_combatants
 from .enemies import EnemyTemplate, pick_enemy_template
 from .items import Consumable, Item, best_item, roll_consumable_drop, roll_item_drop
 from .events import EventOption, EventScenario, resolve_event
-from .world import Exit, Location, WorldGraph, generate_world
+from .decay import DecayManager
+from .world import (
+    Exit,
+    FrontierOption,
+    FrontierState,
+    Location,
+    WorldGraph,
+    build_frontier_state,
+    generate_world,
+)
 
 
 @dataclass
@@ -31,12 +40,15 @@ class Game:
             stats=Stats(health=12, stamina=8, skill=4, awareness=4),
         )
         self.world: WorldGraph = generate_world(settings.seed, settings.steps)
+        self.decay_manager = DecayManager(self.rng)
+        self.decay_manager.initialize_locations(self.world.nodes)
         self.current_location_id = self.world.start
         self.route_taken: List[str] = []
         self.journal: List[str] = []
         self.experience: int = 0
         self.level: int = 1
         self.xp_to_next: int = 5
+        self.frontier_state: FrontierState | None = None
 
     def describe_status_effects(self, context: str) -> None:
         if not self.player.statuses:
@@ -198,16 +210,26 @@ class Game:
             if not self.player.stats.is_alive():
                 self.log("Your injuries are too severe to continue.")
                 return False
-            if not location.exits:
+            if self.apply_zone_time_cost(location) is False:
+                return False
+            frontier = self.prepare_frontier(location)
+            if not frontier.options:
                 self.log("You have reached the end of this route. Victory!")
                 return True
 
-            chosen_exit = self.choose_next_step(location)
-            self.apply_travel_cost(chosen_exit)
+            chosen_option = self.choose_frontier_option(frontier)
+            self.frontier_state = None
+            if chosen_option.placeholder:
+                self.log(
+                    "No true exits remain; you await resolution from the Gatekeeper."
+                )
+                return True
+
+            self.apply_travel_cost(chosen_option.exit)
             if not self.player.stats.is_alive():
                 self.log("You collapse. The expedition ends here.")
                 return False
-            self.current_location_id = chosen_exit.destination
+            self.current_location_id = chosen_option.exit.destination
 
     def describe_location(self, location: Location) -> None:
         self.log(
@@ -221,6 +243,53 @@ class Game:
         self.log("Status :: " + describe_combatants([self.player]))
         breadcrumb = " -> ".join(self.route_taken)
         self.log(f"Route so far: {breadcrumb}")
+
+    def zone_time_cost(self, location: Location) -> int:
+        return max(1, location.biome.travel_cost)
+
+    def frontier_destinations(self, location: Location) -> List[str]:
+        return [
+            exit.destination
+            for exit in location.exits
+            if not self.world.nodes[exit.destination].removed
+        ]
+
+    def apply_zone_time_cost(self, location: Location, modifiers: int = 0) -> bool:
+        time_spent = self.zone_time_cost(location) + modifiers
+        frontier_ids = self.frontier_destinations(location)
+        removed = self.decay_manager.advance_frontier(time_spent, self.world, frontier_ids)
+        if removed:
+            for loc_id in removed:
+                self.log(f"The way to {self.world.nodes[loc_id].name} collapses in decay.")
+        self.prune_removed_exits()
+        if self.current_location_id in removed:
+            self.log("This area crumbles away beneath you. The expedition ends.")
+            return False
+        return True
+
+    def prune_removed_exits(self) -> None:
+        removed_ids = {loc_id for loc_id, loc in self.world.nodes.items() if loc.removed}
+        if not removed_ids:
+            return
+        for location in self.world.nodes.values():
+            location.exits = [
+                exit for exit in location.exits if exit.destination not in removed_ids
+            ]
+
+    def available_exits(self, location: Location) -> List[Exit]:
+        return [exit for exit in location.exits if not self.world.nodes[exit.destination].removed]
+
+    def prepare_frontier(self, location: Location) -> FrontierState:
+        if self.frontier_state and self.frontier_state.source_location_id == location.id:
+            return self.frontier_state
+
+        self.frontier_state = build_frontier_state(
+            location,
+            self.world,
+            self.player.stats.awareness,
+            rng=self.rng,
+        )
+        return self.frontier_state
 
     def handle_combat(self, location: Location) -> bool:
         template = pick_enemy_template(location.biome.key, location.danger, self.rng)
@@ -487,10 +556,30 @@ class Game:
         self.log("Status :: " + describe_combatants([self.player]))
         self.decay_statuses("event")
 
-    def choose_next_step(self, location: Location) -> Exit:
+    def choose_frontier_option(self, frontier: FrontierState) -> FrontierOption:
+        size = frontier.size
+        self.log(
+            "Frontier size target: "
+            f"{size.clamped()} (base {size.base} + {size.positive_total()} pos - {size.negative_total()} neg)."
+        )
+        if size.positive:
+            positive_notes = ", ".join(
+                f"+{mod.value} {mod.label}" for mod in size.positive
+            )
+            self.log(f" Positive modifiers: {positive_notes}.")
+        if size.negative:
+            negative_notes = ", ".join(
+                f"-{mod.value} {mod.label}" for mod in size.negative
+            )
+            self.log(f" Negative modifiers: {negative_notes}.")
+
         self.log("Paths branch ahead:")
-        for idx, exit in enumerate(location.exits, start=1):
-            destination = self.world.nodes[exit.destination]
+        for idx, option in enumerate(frontier.options, start=1):
+            exit = option.exit
+            if option.placeholder:
+                self.log(f" {idx}. {exit.label} :: {option.reason}")
+                continue
+            destination = option.location
             note = f" [{exit.note}]" if exit.note else ""
             self.log(
                 f" {idx}. {exit.label} toward {destination.name} (cost {exit.cost} stamina, "
@@ -499,8 +588,10 @@ class Game:
 
         if self.settings.auto:
             return min(
-                location.exits,
-                key=lambda ex: (self.world.nodes[ex.destination].danger + ex.cost),
+                frontier.options,
+                key=lambda op: (
+                    0 if op.placeholder else (op.location.danger + op.exit.cost)
+                ),
             )
 
         prompt = "Choose your path by number: "
@@ -510,8 +601,8 @@ class Game:
             except ValueError:
                 print("Enter a number matching the listed paths.")
                 continue
-            if 1 <= choice <= len(location.exits):
-                return location.exits[choice - 1]
+            if 1 <= choice <= len(frontier.options):
+                return frontier.options[choice - 1]
             print("Invalid path. Try again.")
 
     def apply_travel_cost(self, chosen_exit: Exit) -> None:
